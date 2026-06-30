@@ -1,6 +1,7 @@
 import unittest
 from datetime import datetime, timedelta
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import mock_open, patch
 
 from reports.video.video_overlay import ShiftVideoOverlayGenerator
@@ -171,6 +172,132 @@ class ShiftVideoOverlayGeneratorTest(unittest.TestCase):
         )
 
         self.assertEqual(scaled, [(0, 0), (1279, 719), (1279, 0)])
+
+    def test_scale_rois_uses_configured_original_canvas_for_half_saved_frames(self):
+        generator = object.__new__(ShiftVideoOverlayGenerator)
+        generator.roi_source_size = (2620, 1216)
+        generator.rois = [{
+            "name": "roi_right_origin",
+            "points": [(0.0, 0.0), (2618.0, 1214.0)],
+        }]
+
+        rois = generator._scale_rois(
+            output_w=1310,
+            output_h=608,
+            source_w=1310,
+            source_h=608,
+        )
+
+        self.assertEqual(rois[0]["points"], [(0, 0), (1309, 607)])
+
+    def test_scale_rois_uses_test_py_reference_size_for_saved_history_frame(self):
+        generator = object.__new__(ShiftVideoOverlayGenerator)
+        generator.roi_source_size = (1440, 1080)
+        generator.rois = [{
+            "name": "roi_gate2_closed",
+            "points": [
+                (56.0, 567.0),
+                (651.0, 582.0),
+                (650.0, 735.0),
+                (22.0, 784.0),
+            ],
+        }]
+
+        rois = generator._scale_rois(
+            output_w=1310,
+            output_h=608,
+            source_w=1310,
+            source_h=608,
+        )
+
+        self.assertEqual(rois[0]["points"], [(51, 319), (592, 328), (591, 414), (20, 441)])
+
+    def test_scale_rois_uses_configured_original_canvas_when_points_fit_frame(self):
+        generator = object.__new__(ShiftVideoOverlayGenerator)
+        generator.roi_source_size = (2620, 1216)
+        generator.rois = [{
+            "name": "roi_top_left",
+            "points": [(100.0, 200.0), (300.0, 400.0)],
+        }]
+
+        rois = generator._scale_rois(
+            output_w=1310,
+            output_h=608,
+            source_w=1310,
+            source_h=608,
+        )
+
+        self.assertEqual(rois[0]["points"], [(50, 100), (150, 200)])
+
+    def test_scale_rois_falls_back_to_saved_frame_size_without_config(self):
+        generator = object.__new__(ShiftVideoOverlayGenerator)
+        generator.roi_source_size = None
+        generator.rois = [{
+            "name": "roi_saved_size",
+            "points": [(100.0, 200.0), (300.0, 400.0)],
+        }]
+
+        with self.assertLogs("reports.video.video_overlay", level="WARNING"):
+            rois = generator._scale_rois(
+                output_w=1310,
+                output_h=608,
+                source_w=1310,
+                source_h=608,
+            )
+
+        self.assertEqual(rois[0]["points"], [(100, 200), (300, 400)])
+
+    def test_scale_rois_infers_test_py_reference_size_without_config(self):
+        generator = object.__new__(ShiftVideoOverlayGenerator)
+        generator.roi_source_size = None
+        generator.rois = [{
+            "name": "roi_gate2_closed",
+            "points": [
+                (56.0, 567.0),
+                (651.0, 582.0),
+                (650.0, 735.0),
+                (22.0, 784.0),
+            ],
+        }]
+
+        with self.assertLogs("reports.video.video_overlay", level="WARNING"):
+            rois = generator._scale_rois(
+                output_w=1310,
+                output_h=608,
+                source_w=1310,
+                source_h=608,
+            )
+
+        self.assertEqual(rois[0]["points"], [(51, 319), (592, 328), (591, 414), (20, 441)])
+
+    def test_configured_roi_source_size_reads_rois_source_resolution(self):
+        generator = object.__new__(ShiftVideoOverlayGenerator)
+        size = generator._configured_roi_source_size({
+            "rois": {
+                "path": "rois.yaml",
+                "source_resolution": {
+                    "width": 2620,
+                    "height": 1216,
+                },
+            },
+        })
+
+        self.assertEqual(size, (2620, 1216))
+
+    def test_input_images_have_overlay_infers_producer_publish_overlay(self):
+        with TemporaryDirectory() as tmp:
+            producer_root = Path(tmp)
+            image_root = producer_root / "var" / "history"
+            image_root.mkdir(parents=True)
+            config_dir = producer_root / "config"
+            config_dir.mkdir()
+            (config_dir / "runtime.yaml").write_text("publish_overlay: true\n", encoding="utf-8")
+
+            generator = object.__new__(ShiftVideoOverlayGenerator)
+            generator.video_cfg = {}
+            generator.image_root = image_root
+
+            self.assertTrue(generator._input_images_have_overlay({}))
 
 
 if __name__ == "__main__":

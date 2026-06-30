@@ -1,6 +1,7 @@
 import cv2
 import glob
 import logging
+import numpy as np
 import time
 import yaml
 from pathlib import Path
@@ -31,20 +32,35 @@ CLASS_COLORS = {
     4: (255, 0, 0),
 }
 
-ROI_COLORS = (
+ROI_COLORS = {
+    "roi_loadcell": (0, 255, 255),
+    "roi_caster_origin": (255, 255, 0),
+    "roi_pipe_checkpoint": (0, 200, 255),
+    "roi_left_origin": (0, 165, 255),
+    "roi_right_origin": (255, 0, 255),
+    "roi_gate1_closed": (255, 0, 0),
+    "roi_gate1_open": (0, 255, 0),
+    "roi_gate2_closed": (128, 0, 0),
+    "roi_gate2_open": (0, 128, 0),
+    "roi_safety_critical": (0, 0, 255),
+}
+ROI_FALLBACK_COLORS = (
     (0, 255, 255),
     (255, 0, 255),
     (0, 165, 255),
     (255, 255, 0),
     (0, 255, 0),
-    (255, 128, 0),
-    (128, 255, 0),
-    (255, 0, 128),
-    (180, 180, 255),
-    (180, 255, 180),
 )
+ROI_FILL_ALPHA = 0.20
 ROI_LINE_THICKNESS = 2
-ROI_LABEL_FONT_SCALE = 0.5
+ROI_LABEL_FONT_SCALE = 0.6
+ROI_LABEL_THICKNESS = 2
+COMMON_ROI_SOURCE_SIZES = (
+    (1440, 1080),
+    (2620, 1216),
+    (1920, 1080),
+    (1280, 720),
+)
 
 
 class ShiftVideoOverlayGenerator:
@@ -84,7 +100,9 @@ class ShiftVideoOverlayGenerator:
         self.image_root = (self.root / cfg["history"]["image_root"]).resolve()
         self.text_root = self.image_root
         self.res_cfg = self.video_cfg.get("resolution", {})
-        self.rois = self._load_rois_once(self._resolve_roi_path(cfg))
+        self.roi_source_size = self._configured_roi_source_size(cfg)
+        self.input_images_have_overlay = self._input_images_have_overlay(cfg)
+        self.rois = [] if self.input_images_have_overlay else self._load_rois_once(self._resolve_roi_path(cfg))
 
         output_dir = self.video_cfg.get("overlay_output_dir", "outputs/videos-overlay")
         self.output_dir = self.root / output_dir
@@ -132,7 +150,7 @@ class ShiftVideoOverlayGenerator:
 
         source_h, source_w = first.shape[:2]
         w, h = self._resolve_resolution(source_w, source_h)
-        rois = self._scale_rois(w, h, source_w, source_h)
+        rois = [] if self.input_images_have_overlay else self._scale_rois(w, h, source_w, source_h)
 
         writer = cv2.VideoWriter(
             str(self.output_path),
@@ -171,19 +189,21 @@ class ShiftVideoOverlayGenerator:
 
             if normal_writer:
                 normal_frame = frame.copy()
-                self._draw_timestamp(normal_frame, img_path, h)
+                if not self.input_images_have_overlay:
+                    self._draw_timestamp(normal_frame, img_path, h)
                 normal_writer.write(normal_frame)
 
-            if rois:
-                self._draw_rois(frame, rois)
+            if not self.input_images_have_overlay:
+                if rois:
+                    self._draw_rois(frame, rois)
 
-            base = Path(img_path).stem
-            txt_path = self._get_txt_path(base)
-            if txt_path.exists():
-                self._draw_yolo(frame, txt_path, w, h)
+                base = Path(img_path).stem
+                txt_path = self._get_txt_path(base)
+                if txt_path.exists():
+                    self._draw_yolo(frame, txt_path, w, h)
 
-            self._draw_timestamp(frame, img_path, h)
-            self._draw_window_label(frame, frame_info, w)
+                self._draw_timestamp(frame, img_path, h)
+                self._draw_window_label(frame, frame_info, w)
 
             writer.write(frame)
             written += 1
@@ -387,6 +407,106 @@ class ShiftVideoOverlayGenerator:
         logger.info("Loaded ROI overlays | path=%s | count=%s", path, len(rois))
         return rois
 
+    def _configured_roi_source_size(self, cfg):
+        source_cfg = self._find_roi_source_size_cfg(cfg.get("rois"))
+        if source_cfg is None:
+            source_cfg = self._find_roi_source_size_cfg(cfg.get("video"))
+
+        if source_cfg is None:
+            return None
+
+        def parse_axis(axis):
+            value = source_cfg.get(axis)
+            if value in (None, "auto"):
+                return None
+            value = int(value)
+            if value <= 0:
+                raise ValueError(f"rois.source_resolution.{axis} must be positive")
+            return value
+
+        width = parse_axis("width")
+        height = parse_axis("height")
+        if bool(width) != bool(height):
+            raise ValueError("rois.source_resolution must include both width and height")
+        if width is None:
+            return None
+
+        return width, height
+
+    def _input_images_have_overlay(self, cfg):
+        configured = self.video_cfg.get("input_images_have_overlay", "auto")
+        if str(configured).strip().lower() != "auto":
+            return self._parse_bool(configured, "video.input_images_have_overlay")
+
+        history_cfg = cfg.get("history") or {}
+        if isinstance(history_cfg, dict) and history_cfg.get("images_have_overlay") is not None:
+            return self._parse_bool(history_cfg.get("images_have_overlay"), "history.images_have_overlay")
+
+        producer_cfg_path = self._producer_runtime_path()
+        if producer_cfg_path is None:
+            return False
+
+        try:
+            with open(producer_cfg_path, "r") as f:
+                producer_cfg = yaml.safe_load(f) or {}
+        except OSError as exc:
+            logger.warning("Unable to read producer runtime config for overlay detection: %s", exc)
+            return False
+
+        if producer_cfg.get("publish_overlay") is None:
+            return False
+
+        has_overlay = self._parse_bool(producer_cfg.get("publish_overlay"), "producer.publish_overlay")
+        if has_overlay:
+            logger.info(
+                "History images already contain overlays; skipping report-side ROI/detection redraw | producer_config=%s",
+                producer_cfg_path,
+            )
+        return has_overlay
+
+    def _producer_runtime_path(self):
+        for parent in self.image_root.parents:
+            candidate = parent / "config" / "runtime.yaml"
+            if candidate.exists():
+                return candidate
+        return None
+
+    @staticmethod
+    def _parse_bool(value, name):
+        if isinstance(value, bool):
+            return value
+        text = str(value).strip().lower()
+        if text in {"1", "true", "yes", "y", "on"}:
+            return True
+        if text in {"0", "false", "no", "n", "off"}:
+            return False
+        raise ValueError(f"{name} must be true, false, or auto")
+
+    @staticmethod
+    def _find_roi_source_size_cfg(section):
+        if not isinstance(section, dict):
+            return None
+
+        for key in (
+            "source_resolution",
+            "source_size",
+            "coordinate_resolution",
+            "roi_source_resolution",
+            "roi_coordinate_resolution",
+        ):
+            candidate = section.get(key)
+            if isinstance(candidate, dict):
+                return candidate
+
+        for nested_key in ("rois", "overlay_rois"):
+            candidate = section.get(nested_key)
+            if isinstance(candidate, dict):
+                nested = ShiftVideoOverlayGenerator._find_roi_source_size_cfg(candidate)
+                if nested is not None:
+                    return nested
+
+        return None
+
     @staticmethod
     def _normalize_roi_points(points):
         normalized = []
@@ -407,22 +527,142 @@ class ShiftVideoOverlayGenerator:
         return normalized
 
     def _scale_rois(self, output_w, output_h, source_w, source_h):
-        return [
-            {"name": roi["name"], "points": self._scale_roi_points(roi["points"], output_w, output_h, source_w, source_h)}
-            for roi in self.rois
-            if len(roi["points"]) >= 2
-        ]
+        if not self.rois:
+            return []
+
+        roi_source_w, roi_source_h = self._resolve_roi_source_size(source_w, source_h)
+        if (roi_source_w, roi_source_h) != (source_w, source_h):
+            scale_x = output_w / float(roi_source_w)
+            scale_y = output_h / float(roi_source_h)
+            logger.info(
+                "Scaling ROI overlay coordinates | roi_source=%sx%s | saved_frame=%sx%s | video=%sx%s | scale_x=%.4f | scale_y=%.4f",
+                roi_source_w,
+                roi_source_h,
+                source_w,
+                source_h,
+                output_w,
+                output_h,
+                scale_x,
+                scale_y,
+            )
+
+        scaled_rois = []
+        for idx, roi in enumerate(self.rois):
+            if len(roi["points"]) < 2:
+                continue
+
+            points = self._scale_roi_points(
+                roi["points"],
+                output_w,
+                output_h,
+                roi_source_w,
+                roi_source_h,
+            )
+            scaled_rois.append({
+                "name": roi["name"],
+                "points": points,
+                "pts": np.array(points, dtype=np.int32),
+                "color": self._roi_color(roi["name"], idx),
+            })
+
+        return scaled_rois
+
+    def _resolve_roi_source_size(self, frame_w, frame_h):
+        configured = getattr(self, "roi_source_size", None)
+        if configured:
+            return configured
+
+        inferred_w, inferred_h = self._infer_roi_source_size_from_points(frame_w, frame_h)
+        if (inferred_w, inferred_h) != (frame_w, frame_h):
+            logger.warning(
+                "rois.source_resolution is not configured; inferred ROI source size %sx%s from coordinates and saved frame %sx%s",
+                inferred_w,
+                inferred_h,
+                frame_w,
+                frame_h,
+            )
+            return inferred_w, inferred_h
+
+        logger.warning(
+            "rois.source_resolution is not configured; ROI coordinates fit saved frame size %sx%s, so no scaling is applied",
+            frame_w,
+            frame_h,
+        )
+        return frame_w, frame_h
+
+    def _infer_roi_source_size_from_points(self, frame_w, frame_h):
+        max_x = 0.0
+        max_y = 0.0
+        for roi in self.rois:
+            for x, y in roi["points"]:
+                max_x = max(max_x, float(x))
+                max_y = max(max_y, float(y))
+
+        if max_x <= frame_w and max_y <= frame_h:
+            return frame_w, frame_h
+
+        for width, height in COMMON_ROI_SOURCE_SIZES:
+            if max_x <= width + 2 and max_y <= height + 2:
+                if width != frame_w or height != frame_h:
+                    return width, height
+
+        inferred_w = self._infer_roi_axis_source_size(max_x, frame_w)
+        inferred_h = self._infer_roi_axis_source_size(max_y, frame_h)
+        return inferred_w, inferred_h
+
+    @staticmethod
+    def _infer_roi_axis_source_size(max_coordinate, frame_size):
+        if frame_size <= 0:
+            return frame_size
+
+        if max_coordinate <= frame_size:
+            return frame_size
+
+        doubled = frame_size * 2
+        if max_coordinate <= doubled + 2:
+            return doubled
+
+        return int(round(max_coordinate)) + 1
 
     def _draw_rois(self, frame, rois):
-        for idx, roi in enumerate(rois):
-            color = ROI_COLORS[idx % len(ROI_COLORS)]
+        overlay = None
+        draw_items = []
+
+        for roi in rois:
             points = roi["points"]
             if len(points) < 2:
                 continue
-            pairs = zip(points, points[1:] + points[:1] if len(points) > 2 else points[1:])
-            for p1, p2 in pairs:
-                cv2.line(frame, p1, p2, color, ROI_LINE_THICKNESS, cv2.LINE_AA)
-            self._draw_roi_label(frame, roi["name"], points, color)
+
+            color = roi["color"]
+            pts = roi["pts"]
+            draw_items.append((roi, color, pts))
+
+            if len(points) >= 3:
+                if overlay is None:
+                    overlay = frame.copy()
+                cv2.fillPoly(overlay, [pts], color)
+
+        if overlay is not None:
+            cv2.addWeighted(overlay, ROI_FILL_ALPHA, frame, 1.0 - ROI_FILL_ALPHA, 0, frame)
+
+        for roi, color, pts in draw_items:
+            is_closed = len(pts) >= 3
+            cv2.polylines(
+                frame,
+                [pts],
+                isClosed=is_closed,
+                color=color,
+                thickness=ROI_LINE_THICKNESS,
+                lineType=cv2.LINE_AA,
+            )
+            self._draw_roi_label(frame, roi["name"], pts, color)
+
+    @staticmethod
+    def _roi_color(name, index):
+        return ROI_COLORS.get(
+            str(name),
+            ROI_FALLBACK_COLORS[index % len(ROI_FALLBACK_COLORS)],
+        )
 
     @staticmethod
     def _scale_roi_points(points, output_w, output_h, source_w, source_h):
@@ -442,34 +682,45 @@ class ShiftVideoOverlayGenerator:
 
         return scaled
 
-    def _draw_roi_label(self, frame, name, points, color):
+    def _draw_roi_label(self, frame, name, pts, color):
         label = self._format_roi_label(name)
         if not label:
             return
 
-        min_x = min(point[0] for point in points)
-        min_y = min(point[1] for point in points)
         output_h, output_w = frame.shape[:2]
-        x = min(max(min_x + 4, 0), output_w - 1)
-        y = min_y - 8 if min_y >= 28 else min_y + 18
-        y = min(max(y, 18), output_h - 4)
+        x, y = pts.mean(axis=0).astype(int)
+        font = cv2.FONT_HERSHEY_SIMPLEX
+
+        (text_w, text_h), baseline = cv2.getTextSize(
+            label,
+            font,
+            ROI_LABEL_FONT_SCALE,
+            ROI_LABEL_THICKNESS,
+        )
+
+        x = max(0, min(int(x), output_w - text_w - 5))
+        y = max(text_h + 5, min(int(y), output_h - 5))
+        cv2.rectangle(
+            frame,
+            (x - 3, y - text_h - 5),
+            (x + text_w + 3, y + baseline + 3),
+            color,
+            -1,
+        )
         cv2.putText(
             frame,
             label,
             (x, y),
-            cv2.FONT_HERSHEY_SIMPLEX,
+            font,
             ROI_LABEL_FONT_SCALE,
-            color,
-            1,
+            (255, 255, 255),
+            ROI_LABEL_THICKNESS,
             cv2.LINE_AA,
         )
 
     @staticmethod
     def _format_roi_label(name):
-        label = str(name).strip()
-        if label.startswith("roi_"):
-            label = label[4:]
-        return label.replace("_", " ")[:32]
+        return str(name).strip()[:32]
 
     def _draw_timestamp(self, frame, img_path, h):
         ts = self._timestamp_from_name(img_path)

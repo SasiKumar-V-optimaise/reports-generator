@@ -20,6 +20,10 @@ history:
 
 rois:
   path: ../electrosteel_pipe_detection_prod/config/rois.yaml
+  # Coordinate space used when the ROI YAML was saved, not the display/window size.
+  source_resolution:
+    width: 1440
+    height: 1080
 
 outputs:
   csv_dir: outputs/csv
@@ -31,6 +35,19 @@ diagnosis:
 verified_pipes_mode: loadcell
 verified_pipes_gate_open_max_interval_seconds: 120   # gate open must be within 2 minutes from t_origin
 caster_number: 2
+gate2_closed_position_report:
+  interval_minutes: 10
+  recent_window_minutes: 10
+  min_avg_coverage_percent: 80
+  roi_name: roi_gate2_closed
+  gate2_class_id: 3
+  source_resolution:
+    width: 1310
+    height: 608
+  # false = email only when measured gate coverage is below threshold.
+  # true = also email when no YOLO samples exist in the interval.
+  alert_on_no_samples: false
+  send_email: true
 missing_loadcell_video:
   enabled: true
   pre_origin_seconds: 60
@@ -68,6 +85,8 @@ email:
 video:
   fps: 10
   codec: mp4v
+  # auto reads the source app publish_overlay flag; true means history images already have overlays.
+  input_images_have_overlay: auto
   resolution:
     width: auto
     height: auto
