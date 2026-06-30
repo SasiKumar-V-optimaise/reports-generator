@@ -1,0 +1,15 @@
+video:
+  resolution:
+    width: 1280
+    height: 720
+
+  fps: 5
+
+  codec: mp4v
+
+  overlay:
+    font_scale: 0.7
+    thickness: 2
+    color: [0, 255, 255]   # BGR (OpenCV)
+    margin_bottom: 20
+    margin_left: 20

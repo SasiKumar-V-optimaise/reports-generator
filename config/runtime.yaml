@@ -1,0 +1,83 @@
+
+database:
+  path: ../electrosteel_pipe_detection_prod/var/pipes.db
+
+history:
+  image_root: ../electrosteel_pipe_detection_prod/var/history
+
+  shifts:
+    - name: Shift_A
+      start: "06:00"
+      end: "14:00"
+
+    - name: Shift_B
+      start: "14:00"
+      end: "22:00"
+
+    - name: Shift_C
+      start: "22:00"
+      end: "06:00"
+
+rois:
+  path: ../electrosteel_pipe_detection_prod/config/rois.yaml
+
+outputs:
+  csv_dir: outputs/csv
+diagnosis:
+  t_origin_gap_min: "00:01:30"
+  t_origin_gap_max: "00:03:20"
+# loadcell = verify missing-loadcell rows only; all = verify every row.
+# Checked rows pass immediately when pipe_checkpoint=1; otherwise G2 must open inside the verification window.
+verified_pipes_mode: loadcell
+verified_pipes_gate_open_max_interval_seconds: 120   # gate open must be within 2 minutes from t_origin
+caster_number: 2
+missing_loadcell_video:
+  enabled: true
+  pre_origin_seconds: 60
+  clip_duration_seconds: 300
+  delete_after_upload: true
+verified_pipe_records_recipients:
+  - punithsai2001@gmail.com
+  - saikiran@electrosteel.com
+  - karikutisasikumar1301@gmail.com
+  - lsrao@electrosteel.com
+  - sivakumar.p@electrosteel.com
+  - dipquality@electrosteel.com
+  - swsdp@electrosteel.com
+
+email:
+  smtp_server: smtp.gmail.com
+  send_csv_attachment: true   # true = attach CSV mail, false = skip attachment mail
+  smtp_port: 587
+  sender: innovate@v-optimai.com
+  # password: fmnjjxnjzwvfjyzc
+  password_env: EMAIL_APP_PASSWORD
+  recipients:
+    - punithsai2001@gmail.com
+    - info@v-optimai.com
+    - karikutisasikumar1301@gmail.com
+    - shyamsundar.pilli@v-optimai.com
+    - aakashpalina2019@gmail.com
+  # Diagnosis CSV is sent only to this list. Keep [] to skip diagnosis email.
+  diagnosis_recipients: 
+    - punithsai2001@gmail.com
+    - karikutisasikumar1301@gmail.com
+    - shyamsundar.pilli@v-optimai.com
+    - aakashpalina2019@gmail.com
+   
+video:
+  fps: 10
+  codec: mp4v
+  resolution:
+    width: auto
+    height: auto
+  output_dir: outputs/videos
+  overlay_output_dir: outputs/videos-overlay
+
+gdrive:
+  remote: gdrive
+  base_path: "Electrosteel/Daily pipe recordings"
+  pipes_csv_dir: "Pipes_Data_Sheet"
+  videos_dir: "Pipe_count_caster2_vid"
+logging:
+  level: INFO   # DEBUG / INFO / WARNING / ERROR
