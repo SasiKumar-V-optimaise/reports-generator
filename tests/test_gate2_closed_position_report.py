@@ -22,29 +22,49 @@ class Gate2ClosedPositionReportTest(unittest.TestCase):
         report.gate2_class_id = 3
         return report
 
-    def test_gate2_detection_inside_closed_roi_calculates_coverage(self):
-        report = self._report()
+    def _measure_yolo(self, report, yolo_line: str):
         timestamp = datetime(2026, 6, 30, 12, 0, 0)
-
         text_path = Path("pipe_30-06-2026-12-00-00-000.txt")
-        with patch("builtins.open", mock_open(read_data="3 0.25 0.25 0.5 0.5\n2 0.25 0.25 0.5 0.5\n")):
-            frame = report._measure_frame(timestamp, text_path, frame_width=20, frame_height=20)
+        with patch("builtins.open", mock_open(read_data=yolo_line)):
+            return report._measure_frame(timestamp, text_path, frame_width=20, frame_height=20)
+
+    def test_gate2_detection_inside_closed_roi_calculates_detection_inside_roi_percent(self):
+        report = self._report()
+        frame = self._measure_yolo(report, "3 0.25 0.25 0.5 0.5\n2 0.25 0.25 0.5 0.5\n")
 
         self.assertEqual(frame.gate2_detection_count, 1)
         self.assertEqual(frame.centroid_inside_count, 1)
         self.assertEqual(frame.coverage_percent, 100.0)
 
-    def test_gate2_detection_centroid_outside_closed_roi_counts_zero_coverage(self):
+    def test_gate2_detection_half_inside_closed_roi_calculates_50_percent(self):
         report = self._report()
-        timestamp = datetime(2026, 6, 30, 12, 0, 0)
+        frame = self._measure_yolo(report, "3 0.5 0.25 0.5 0.5\n")
 
-        text_path = Path("pipe_30-06-2026-12-00-00-000.txt")
-        with patch("builtins.open", mock_open(read_data="3 0.75 0.75 0.25 0.25\n")):
-            frame = report._measure_frame(timestamp, text_path, frame_width=20, frame_height=20)
+        self.assertEqual(frame.gate2_detection_count, 1)
+        self.assertAlmostEqual(frame.coverage_percent, 50.0)
+
+    def test_gate2_detection_outside_closed_roi_counts_zero_percent(self):
+        report = self._report()
+        frame = self._measure_yolo(report, "3 0.75 0.75 0.25 0.25\n")
 
         self.assertEqual(frame.gate2_detection_count, 1)
         self.assertEqual(frame.centroid_inside_count, 0)
         self.assertEqual(frame.coverage_percent, 0.0)
+
+    def test_gate2_detection_larger_than_roi_uses_detection_area_denominator(self):
+        report = self._report()
+        frame = self._measure_yolo(report, "3 0.5 0.5 1.0 1.0\n")
+
+        self.assertEqual(frame.gate2_detection_count, 1)
+        self.assertAlmostEqual(frame.coverage_percent, 25.0)
+
+    def test_gate2_detection_centroid_outside_closed_roi_still_measures_partial_overlap(self):
+        report = self._report()
+        frame = self._measure_yolo(report, "3 0.65 0.25 0.5 0.5\n")
+
+        self.assertEqual(frame.gate2_detection_count, 1)
+        self.assertEqual(frame.centroid_inside_count, 0)
+        self.assertAlmostEqual(frame.coverage_percent, 20.0)
 
     def test_sample_gate2_line_centroid_is_inside_real_gate2_closed_roi(self):
         report = object.__new__(Gate2ClosedPositionReport)
@@ -177,10 +197,12 @@ class Gate2ClosedPositionReportTest(unittest.TestCase):
         )
 
         self.assertEqual(rows[0]["avg_coverage_percent"], 90.0)
+        self.assertEqual(rows[0]["avg_detection_inside_roi_percent"], 90.0)
         self.assertEqual(rows[0]["status"], "VIEW_UNCHANGED")
         self.assertFalse(rows[0]["alert"])
 
         self.assertEqual(rows[1]["avg_coverage_percent"], 70.0)
+        self.assertEqual(rows[1]["avg_detection_inside_roi_percent"], 70.0)
         self.assertEqual(rows[1]["status"], "POSSIBLE_VIEW_CHANGE")
         self.assertTrue(rows[1]["alert"])
 
@@ -247,6 +269,7 @@ class Gate2ClosedPositionReportTest(unittest.TestCase):
         self.assertEqual(summary["total_sample_count"], 1)
         self.assertEqual(summary["gate2_detection_count"], 1)
         self.assertEqual(summary["gate2_closed_count"], 1)
+        self.assertEqual(summary["avg_detection_inside_roi_percent"], 70.0)
         self.assertEqual(summary["avg_area_covered_percent"], 70.0)
         self.assertEqual(summary["threshold"], 80.0)
         self.assertEqual(summary["status"], "BELOW_THRESHOLD")

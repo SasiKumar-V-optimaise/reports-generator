@@ -78,14 +78,14 @@ def _first_dict(section: dict, keys: tuple[str, ...]) -> dict | None:
 
 class Gate2ClosedPositionReport:
     """
-    Reports whether the static gate2-closed ROI is still covered by gate2 detections.
+    Reports the percentage of detected Gate2 area inside roi_gate2_closed.
 
     For each sampled YOLO text frame:
       1. keep only gate2 detections,
       2. calculate each detection centroid,
-      3. keep detections whose centroid is inside roi_gate2_closed,
-      4. calculate detection/ROI intersection coverage,
-      5. use the best coverage value for that frame.
+      3. count centroids inside roi_gate2_closed as a diagnostic,
+      4. calculate the percentage of detected Gate2 area inside roi_gate2_closed,
+      5. use the best detection-inside-ROI percentage for that frame.
     """
 
     DEFAULT_INTERVAL_SECONDS = 10 * 60
@@ -246,6 +246,8 @@ class Gate2ClosedPositionReport:
         )
 
     def _configured_threshold_percent(self) -> float:
+        # Backward-compatible config name; this threshold applies to the average
+        # percentage of detected Gate2 area inside roi_gate2_closed.
         threshold = float(self.report_cfg.get("min_avg_coverage_percent", self.DEFAULT_THRESHOLD_PERCENT))
         if threshold < 0 or threshold > 100:
             raise ValueError("gate2_closed_position_report.min_avg_coverage_percent must be between 0 and 100")
@@ -684,15 +686,20 @@ class Gate2ClosedPositionReport:
                     continue
 
                 gate2_count += 1
-                centroid = self._yolo_centroid(xc, yc, frame_width, frame_height)
-                centroids.append(centroid)
-                if not self._point_in_polygon(centroid, self.roi_points):
+                detection_area = self._polygon_area(polygon)
+                if detection_area <= self.EPSILON:
                     continue
 
-                centroid_inside_count += 1
+                centroid = self._yolo_centroid(xc, yc, frame_width, frame_height)
+                centroids.append(centroid)
+                if self._point_in_polygon(centroid, self.roi_points):
+                    centroid_inside_count += 1
+
                 intersection = self._convex_intersection(polygon, self.roi_points)
                 if intersection:
-                    best_coverage = max(best_coverage, min((self._polygon_area(intersection) / self.roi_area) * 100.0, 100.0))
+                    intersection_area = self._polygon_area(intersection)
+                    detection_inside_roi_percent = min((intersection_area / detection_area) * 100.0, 100.0)
+                    best_coverage = max(best_coverage, detection_inside_roi_percent)
 
         x_min, x_max, y_min, y_max = self._centroid_bounds(centroids)
         return FrameCoverage(
@@ -757,10 +764,10 @@ class Gate2ClosedPositionReport:
 
     def _interval_row(self, interval: dict) -> dict:
         sample_count = interval["sample_count"]
-        avg_coverage = interval["coverage_sum"] / sample_count if sample_count else 0.0
+        avg_detection_inside_roi = interval["coverage_sum"] / sample_count if sample_count else 0.0
         if sample_count == 0:
             status, alert = "NO_SAMPLES", bool(getattr(self, "alert_on_no_samples", True))
-        elif avg_coverage >= self.threshold_percent:
+        elif avg_detection_inside_roi >= self.threshold_percent:
             status, alert = "VIEW_UNCHANGED", False
         else:
             status, alert = "POSSIBLE_VIEW_CHANGE", True
@@ -775,7 +782,8 @@ class Gate2ClosedPositionReport:
             "centroid_x_max": self._round_optional(interval["centroid_x_max"]),
             "centroid_y_min": self._round_optional(interval["centroid_y_min"]),
             "centroid_y_max": self._round_optional(interval["centroid_y_max"]),
-            "avg_coverage_percent": round(avg_coverage, 2),
+            "avg_detection_inside_roi_percent": round(avg_detection_inside_roi, 2),
+            "avg_coverage_percent": round(avg_detection_inside_roi, 2),
             "threshold_percent": round(self.threshold_percent, 2),
             "status": status,
             "alert": alert,
@@ -842,7 +850,14 @@ class Gate2ClosedPositionReport:
         total_samples = sum(int(row["sample_count"]) for row in rows)
         if not total_samples:
             return 0.0
-        coverage_sum = sum(float(row["avg_coverage_percent"]) * int(row["sample_count"]) for row in rows)
+        coverage_sum = 0.0
+        for row in rows:
+            row_average = (
+                row["avg_detection_inside_roi_percent"]
+                if "avg_detection_inside_roi_percent" in row
+                else row["avg_coverage_percent"]
+            )
+            coverage_sum += float(row_average) * int(row["sample_count"])
         return round(coverage_sum / total_samples, 2)
 
     def _build_summary(
@@ -873,6 +888,7 @@ class Gate2ClosedPositionReport:
             "total_sample_count": len(text_files),
             "gate2_detection_count": sum(int(row["gate2_detection_count"]) for row in rows),
             "gate2_closed_count": sum(int(row["centroid_inside_count"]) for row in rows),
+            "avg_detection_inside_roi_percent": avg_area,
             "avg_area_covered_percent": avg_area,
             "interval_count": len(rows),
             "alert_count": alert_count,
@@ -882,6 +898,10 @@ class Gate2ClosedPositionReport:
 
     @staticmethod
     def _summary_body(summary: dict) -> str:
+        avg_detection_inside_roi = summary.get(
+            "avg_detection_inside_roi_percent",
+            summary["avg_area_covered_percent"],
+        )
         return "\n".join([
             f"Date              : {summary['date']}",
             f"Shift             : {summary['shift']}",
@@ -893,7 +913,7 @@ class Gate2ClosedPositionReport:
             f"Total sample count: {summary['total_sample_count']}",
             f"Gate2 detection count: {summary['gate2_detection_count']}",
             f"Gate2 closed count   : {summary['gate2_closed_count']}",
-            f"Avg area covered     : {summary['avg_area_covered_percent']:.2f}",
+            f"Avg detection inside ROI: {avg_detection_inside_roi:.2f}",
             f"Threshold            : {float(summary['threshold']):g}",
         ])
 
@@ -908,7 +928,7 @@ class Gate2ClosedPositionReport:
 
         subject = f"Gate2 Closed Position Alert - {summary['shift']} - {summary['date']}"
         body = "\n".join([
-            "Gate2 closed-position coverage is below the configured threshold.",
+            "Gate2 closed-position detection-inside-ROI percent is below the configured threshold.",
             "",
             self._summary_body(summary),
         ])
