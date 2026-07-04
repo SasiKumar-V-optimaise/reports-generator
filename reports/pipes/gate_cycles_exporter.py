@@ -2,11 +2,16 @@ import sqlite3
 import argparse
 import csv
 from datetime import datetime, timedelta, timezone
-
-
 from pathlib import Path
+import sys
 
-DB_PATH = Path("../electrosteel_pipe_detection_prod/var/pipes.db").resolve()
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from reports.common.caster_config import resolve_enabled_casters
+from reports.common.config_loader import load_runtime_config
+
 IST = timezone(timedelta(hours=5, minutes=30))
 
 SHIFTS = {
@@ -16,16 +21,18 @@ SHIFTS = {
 }
 
 
-def parse_shift(date_str, shift):
-    date = datetime.strptime(date_str, "%d-%m-%Y")
-
-    start_str, end_str = SHIFTS[shift]
+def parse_shift(date_str, shift, cfg):
+    shift_key = f"shift_{shift.lower()}"
+    configured = {
+        str(item["name"]).lower(): (item["start"], item["end"])
+        for item in (cfg.get("history", {}) or {}).get("shifts", [])
+    }
+    start_str, end_str = configured.get(shift_key, SHIFTS[shift])
 
     start = datetime.strptime(f"{date_str} {start_str}", "%d-%m-%Y %H:%M")
     end = datetime.strptime(f"{date_str} {end_str}", "%d-%m-%Y %H:%M")
 
-    # Shift C crosses midnight
-    if shift == "C":
+    if end <= start:
         end += timedelta(days=1)
 
     start = start.replace(tzinfo=IST)
@@ -45,12 +52,21 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--date", required=True, help="DD-MM-YYYY")
     parser.add_argument("--shift", required=True, choices=["A", "B", "C"])
+    parser.add_argument("--caster", help="Caster id, for example caster1")
 
     args = parser.parse_args()
 
-    start_ts, end_ts = parse_shift(args.date, args.shift)
+    base_cfg = load_runtime_config()
+    casters = resolve_enabled_casters(base_cfg, [args.caster] if args.caster else None)
+    caster = casters[0]
+    cfg = caster.cfg
+    db_path = (PROJECT_ROOT / cfg["database"]["path"]).resolve()
+    if not db_path.exists():
+        raise FileNotFoundError(f"Database not found: {db_path}")
 
-    conn = sqlite3.connect(DB_PATH)
+    start_ts, end_ts = parse_shift(args.date, args.shift, cfg)
+
+    conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
 
     query = """
@@ -62,7 +78,8 @@ def main():
 
     rows = cursor.execute(query, (start_ts, end_ts)).fetchall()
 
-    csv_name = f"gate_open_events_{args.date}_shift_{args.shift}.csv"
+    caster_part = f"_{caster.file_token}" if caster.file_token else ""
+    csv_name = f"gate_open_events{caster_part}_{args.date}_shift_{args.shift}.csv"
 
     with open(csv_name, "w", newline="") as f:
         writer = csv.writer(f)

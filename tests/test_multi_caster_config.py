@@ -1,0 +1,354 @@
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest import TestCase
+from unittest.mock import patch
+
+import pandas as pd
+
+from cli import report_workflow
+from cli.report_workflow import ShiftRun, ShiftWorkflow
+from reports.common.caster_config import CasterConfig, deep_merge, resolve_enabled_casters
+from reports.gates.gate2_closed_position_report import Gate2ClosedPositionReport
+from reports.pipes import gate_cycles_exporter
+from reports.pipes.pipe_exporter import PipeExporter
+from reports.pipes.verified_pipes import VerifiedPipeExporter
+from reports.video.video_generator import ShiftVideoGenerator
+
+
+def _base_cfg():
+    return {
+        "database": {"path": "legacy/pipes.db"},
+        "history": {
+            "image_root": "legacy/history",
+            "shifts": [
+                {"name": "Shift_A", "start": "06:00", "end": "14:00"},
+                {"name": "Shift_B", "start": "14:00", "end": "22:00"},
+                {"name": "Shift_C", "start": "22:00", "end": "06:00"},
+            ],
+        },
+        "rois": {"path": "legacy/rois.yaml", "source_resolution": {"width": 1440, "height": 1080}},
+        "outputs": {"csv_dir": "outputs/csv"},
+        "video": {"output_dir": "outputs/videos", "overlay_output_dir": "outputs/videos-overlay"},
+        "gdrive": {
+            "remote": "gdrive",
+            "base_path": "Electrosteel/Daily pipe recordings",
+            "pipes_csv_dir": "Pipes_Data_Sheet",
+            "videos_dir": "Pipe_count_caster2_vid",
+        },
+        "email": {
+            "sender": "sender@example.com",
+            "password": "secret",
+            "recipients": ["ops@example.com"],
+            "diagnosis_recipients": ["diag@example.com"],
+            "send_csv_attachment": True,
+            "smtp_server": "smtp.example.com",
+            "smtp_port": 587,
+        },
+        "verified_pipe_records_recipients": ["verified@example.com"],
+        "verified_pipes_mode": "loadcell",
+        "missing_loadcell_video": {"enabled": True, "delete_after_upload": False},
+        "casters": {
+            "defaults": {
+                "enabled": True,
+                "var_root": "../producer/var",
+                "database_file": "pipes.db",
+                "history_dir": "history",
+                "outputs": {
+                    "csv_dir_template": "outputs/{caster_id}/csv",
+                    "video_dir_template": "outputs/{caster_id}/videos",
+                    "overlay_video_dir_template": "outputs/{caster_id}/videos-overlay",
+                },
+                "gdrive": {
+                    "pipes_csv_dir_template": "Pipes_Data_Sheet/{caster_id}",
+                    "videos_dir_template": "Pipe_count_{caster_id}_vid",
+                },
+            },
+            "items": [
+                {
+                    "id": "caster1",
+                    "number": 1,
+                    "var_dir": "../producer/var/caster1",
+                    "rois": {"path": "../producer/config/caster1/rois.yaml"},
+                },
+                {
+                    "id": "caster2",
+                    "number": 2,
+                    "var_dir": "../producer/var/caster2",
+                    "rois": {"path": "../producer/config/caster2/rois.yaml"},
+                },
+                {
+                    "id": "caster3",
+                    "number": 3,
+                    "enabled": False,
+                    "var_dir": "../producer/var/caster3",
+                    "rois": {"path": "../producer/config/caster3/rois.yaml"},
+                },
+            ],
+        },
+    }
+
+
+class MultiCasterConfigTest(TestCase):
+    def test_deep_merge_and_default_path_resolution_from_var_dir(self):
+        cfg = _base_cfg()
+        caster = resolve_enabled_casters(cfg, ["caster1"])[0]
+
+        self.assertEqual(Path(caster.cfg["database"]["path"]).as_posix(), "../producer/var/caster1/pipes.db")
+        self.assertEqual(Path(caster.cfg["history"]["image_root"]).as_posix(), "../producer/var/caster1/history")
+        self.assertEqual(caster.cfg["rois"]["path"], "../producer/config/caster1/rois.yaml")
+        self.assertEqual(caster.cfg["rois"]["source_resolution"]["width"], 1440)
+        self.assertEqual(caster.cfg["outputs"]["csv_dir"], "outputs/caster1/csv")
+        self.assertEqual(caster.cfg["video"]["output_dir"], "outputs/caster1/videos")
+        self.assertEqual(caster.cfg["video"]["overlay_output_dir"], "outputs/caster1/videos-overlay")
+        self.assertEqual(caster.cfg["gdrive"]["pipes_csv_dir"], "Pipes_Data_Sheet/caster1")
+        self.assertEqual(caster.cfg["gdrive"]["videos_dir"], "Pipe_count_caster1_vid")
+        self.assertEqual(deep_merge({"a": {"b": 1}}, {"a": {"c": 2}}), {"a": {"b": 1, "c": 2}})
+
+    def test_disabled_casters_are_skipped_and_yaml_order_is_preserved(self):
+        casters = resolve_enabled_casters(_base_cfg())
+        self.assertEqual([caster.id for caster in casters], ["caster1", "caster2"])
+
+    def test_legacy_single_caster_runtime_still_resolves(self):
+        cfg = _base_cfg()
+        cfg.pop("casters")
+
+        caster = resolve_enabled_casters(cfg)[0]
+
+        self.assertTrue(caster.is_legacy)
+        self.assertIsNone(caster.file_token)
+        self.assertEqual(caster.cfg["database"]["path"], "legacy/pipes.db")
+
+    def test_state_path_includes_caster_id(self):
+        with TemporaryDirectory() as tmp:
+            wf = ShiftWorkflow(cfg=_base_cfg(), selected_ids=["caster1"])
+            wf.state_dir = Path(tmp)
+            run = ShiftRun("02-07-2026", "Shift_A")
+
+            self.assertEqual(
+                wf._state_path(run, wf.casters[0]).name,
+                "caster1_02072026_shift_a.json",
+            )
+
+    def test_output_filenames_include_caster_id(self):
+        caster = CasterConfig("caster1", 1, "Caster 1", True, {}, False)
+
+        pipe_exporter = object.__new__(PipeExporter)
+        pipe_exporter.caster_file_token = caster.file_token
+        self.assertEqual(
+            pipe_exporter._filename("pipes", "02-07-2026", "Shift_A", "123456", "csv"),
+            "pipes_caster1_02072026_shift_a_123456.csv",
+        )
+        self.assertEqual(
+            pipe_exporter._filename("pipes_diagnosis", "02-07-2026", "Shift_A", "123456", "xlsx"),
+            "pipes_diagnosis_caster1_02072026_shift_a_123456.xlsx",
+        )
+
+        with TemporaryDirectory() as tmp:
+            verified = object.__new__(VerifiedPipeExporter)
+            verified.cfg = {"verified_pipes_gate_open_max_interval_seconds": 120}
+            verified.output_dir = Path(tmp)
+            verified.caster_file_token = caster.file_token
+
+            out_path, _summary = verified.export_from_dataframes(
+                "02-07-2026",
+                "Shift_A",
+                pd.DataFrame([{
+                    "pipe_uid": "p1",
+                    "pipe_checkpoint": 1,
+                    "t_origin": "2026-07-02 06:01:00",
+                    "t_loadcell_enter": "",
+                    "t_loadcell_exit": "",
+                }]),
+                pd.DataFrame(columns=["gate_name", "t_open_IST"]),
+                mode="loadcell",
+                shift_end=None,
+            )
+
+        self.assertIn("verified_pipes_caster1_02072026_shift_a_", out_path.name)
+
+    def test_video_generator_uses_caster_specific_history_root(self):
+        caster = resolve_enabled_casters(_base_cfg(), ["caster2"])[0]
+        generator = ShiftVideoGenerator("02-07-2026", "A", cfg=caster.cfg, caster=caster)
+
+        self.assertTrue(str(generator.image_root).endswith(r"producer\var\caster2\history"))
+        self.assertEqual(generator.output_path.name, "02-07-2026_caster2_shift_a.mp4")
+
+    def test_gate2_report_uses_caster_specific_history_and_rois(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            history = root / "history"
+            history.mkdir()
+            rois = root / "rois.yaml"
+            rois.write_text(
+                "\n".join([
+                    "roi_gate2_closed:",
+                    "- [0, 0]",
+                    "- [10, 0]",
+                    "- [10, 10]",
+                    "- [0, 10]",
+                ]),
+                encoding="utf-8",
+            )
+            caster = CasterConfig(
+                "caster1",
+                1,
+                "Caster 1",
+                True,
+                {
+                    "history": {
+                        "image_root": str(history),
+                        "shifts": [{"name": "Shift_A", "start": "06:00", "end": "14:00"}],
+                    },
+                    "rois": {"path": str(rois)},
+                    "gate2_closed_position_report": {"send_email": False},
+                },
+                False,
+            )
+
+            report = Gate2ClosedPositionReport(cfg=caster.cfg, caster=caster)
+
+        self.assertEqual(report.history_root, history)
+        self.assertEqual(report.roi_points, [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)])
+
+    def test_gate_cycles_exporter_has_no_hardcoded_db_path(self):
+        self.assertFalse(hasattr(gate_cycles_exporter, "DB_PATH"))
+
+
+class WorkflowOrderingTest(TestCase):
+    def _workflow(self, tmp):
+        wf = ShiftWorkflow(cfg=_base_cfg())
+        wf.state_dir = Path(tmp)
+        return wf
+
+    def test_workflow_orders_raw_verified_then_diagnosis_then_videos(self):
+        events = []
+
+        class FakePipeExporter:
+            def __init__(self, cfg=None, caster=None):
+                self.caster = caster
+
+            def export(self, date_str, shift):
+                return Path(f"{self.caster.id}.csv"), 10
+
+            def export_diagnosis(self, date_str, shift):
+                return Path(f"{self.caster.id}.xlsx"), {
+                    "pipe_count": 10,
+                    "abnormal_count": 0,
+                    "t_origin_gap_abnormal_count": 0,
+                    "t_origin_gap_too_slow_count": 0,
+                    "t_origin_gap_too_fast_count": 0,
+                    "loadcell_missing_count": 0,
+                }
+
+        class FakeVerifiedExporter:
+            def __init__(self, cfg=None, caster=None):
+                self.caster = caster
+
+            def export(self, date_str, shift, csv_path, mode=None):
+                return Path(f"{self.caster.id}_verified.csv"), {
+                    "verified_count": 9,
+                    "removed_count": 1,
+                    "loadcell_missing_records": [],
+                }
+
+        class FakeMailer:
+            def __init__(self, cfg=None):
+                pass
+
+            def send_csv(self, subject, body, csv_path, recipients=None):
+                if subject.startswith("Pipe Report CSV"):
+                    events.append(f"{subject.split(' - ')[1].lower().replace(' ', '')}_raw_email")
+                elif subject.startswith("Verified Pipe Records"):
+                    events.append(f"{subject.split(' - ')[1].lower().replace(' ', '')}_verified_email")
+                elif subject.startswith("Pipe Diagnosis Report"):
+                    events.append(f"{subject.split(' - ')[1].lower().replace(' ', '')}_diagnosis_email")
+
+            def send(self, subject, body, attachments=None):
+                events.append("final_summary")
+
+        class FakeUploader:
+            def __init__(self, cfg=None, caster=None):
+                self.caster = caster
+
+            def upload_csv(self, path):
+                return f"https://drive/{self.caster.id}/csv"
+
+            def upload_video(self, path):
+                return f"https://drive/{self.caster.id}/video"
+
+        class FakeVideoGenerator:
+            def __init__(self, date_str, shift, cfg=None, caster=None):
+                self.caster = caster
+
+            def generate(self):
+                events.append(f"{self.caster.id}_video")
+                return f"{self.caster.id}.mp4"
+
+        with (
+            TemporaryDirectory() as tmp,
+            patch.object(report_workflow, "PipeExporter", FakePipeExporter),
+            patch.object(report_workflow, "VerifiedPipeExporter", FakeVerifiedExporter),
+            patch.object(report_workflow, "EmailSender", FakeMailer),
+            patch.object(report_workflow, "GDriveUploader", FakeUploader),
+            patch.object(report_workflow, "ShiftVideoGenerator", FakeVideoGenerator),
+        ):
+            wf = self._workflow(tmp)
+            wf.run(ShiftRun("02-07-2026", "Shift_A"))
+
+        self.assertEqual(
+            events,
+            [
+                "caster1_raw_email",
+                "caster1_verified_email",
+                "caster2_raw_email",
+                "caster2_verified_email",
+                "caster1_diagnosis_email",
+                "caster2_diagnosis_email",
+                "caster1_video",
+                "caster2_video",
+                "final_summary",
+            ],
+        )
+
+    def test_failure_isolation_keeps_later_casters_running(self):
+        events = []
+
+        class FakePipeExporter:
+            def __init__(self, cfg=None, caster=None):
+                self.caster = caster
+
+            def export(self, date_str, shift):
+                if self.caster.id == "caster1":
+                    raise RuntimeError("caster1 failed")
+                return Path(f"{self.caster.id}.csv"), 5
+
+        class FakeVerifiedExporter:
+            def __init__(self, cfg=None, caster=None):
+                self.caster = caster
+
+            def export(self, date_str, shift, csv_path, mode=None):
+                return Path(f"{self.caster.id}_verified.csv"), {
+                    "verified_count": 5,
+                    "removed_count": 0,
+                    "loadcell_missing_records": [],
+                }
+
+        class FakeMailer:
+            def __init__(self, cfg=None):
+                pass
+
+            def send_csv(self, subject, body, csv_path, recipients=None):
+                events.append(subject)
+
+        with (
+            TemporaryDirectory() as tmp,
+            patch.object(report_workflow, "PipeExporter", FakePipeExporter),
+            patch.object(report_workflow, "VerifiedPipeExporter", FakeVerifiedExporter),
+            patch.object(report_workflow, "EmailSender", FakeMailer),
+        ):
+            wf = self._workflow(tmp)
+            wf.phase_raw_and_verified(wf.casters, ShiftRun("02-07-2026", "Shift_A"))
+
+        self.assertTrue(wf.results["caster1"].errors)
+        self.assertIn("Pipe Report CSV - Caster 2", events[0])
+        self.assertIn("Verified Pipe Records - Caster 2", events[1])

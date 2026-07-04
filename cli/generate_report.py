@@ -41,8 +41,7 @@ def setup_logging(cfg: dict):
     )
 
 
-cfg = load_runtime_config()
-setup_logging(cfg)
+cfg = {}
 logger = logging.getLogger("reports-generator")
 
 
@@ -984,6 +983,16 @@ def main():
         wf.run_diagnosis_only(run)
     else:
         wf.run(run)
+
+
+from cli.report_workflow import (  # noqa: E402,F401
+    ShiftRun,
+    ShiftWorkflow,
+    backoff_retry,
+    detect_shift_for_trigger,
+    main,
+    setup_logging,
+)
 
 
 if __name__ == "__main__":

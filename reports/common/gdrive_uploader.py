@@ -1,6 +1,7 @@
 import subprocess
-import yaml
 from pathlib import Path
+
+from reports.common.config_loader import load_runtime_config
 
 
 class GDriveUploader:
@@ -13,11 +14,8 @@ class GDriveUploader:
       gdrive.videos_dir
     """
 
-    def __init__(self):
-        root = Path(__file__).resolve().parents[2]
-        with open(root / "config/runtime.yaml") as f:
-            cfg = yaml.safe_load(f)
-
+    def __init__(self, cfg: dict | None = None, caster=None):
+        cfg = cfg or load_runtime_config()
         gcfg = cfg["gdrive"]
         self.remote = gcfg["remote"]
         self.base_path = gcfg["base_path"].strip("/")

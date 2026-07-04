@@ -101,3 +101,74 @@ gdrive:
   videos_dir: "Pipe_count_caster2_vid"
 logging:
   level: INFO   # DEBUG / INFO / WARNING / ERROR
+
+casters:
+  defaults:
+    enabled: false
+    var_root: ../electrosteel_pipe_detection_prod/var
+    database_file: pipes.db
+    history_dir: history
+    outputs:
+      csv_dir_template: outputs/{caster_id}/csv
+      video_dir_template: outputs/{caster_id}/videos
+      overlay_video_dir_template: outputs/{caster_id}/videos-overlay
+    gdrive:
+      pipes_csv_dir_template: Pipes_Data_Sheet/{caster_id}
+      videos_dir_template: Pipe_count_{caster_id}_vid
+
+  items:
+    - id: caster1
+      number: 1
+      enabled: true
+      var_dir: ../electrosteel_pipe_detection_prod/var/caster1
+      rois:
+        path: ../electrosteel_pipe_detection_prod/config/caster1/rois.yaml
+
+    - id: caster2
+      number: 2
+      enabled: true
+      var_dir: ../electrosteel_pipe_detection_prod/var/caster2
+      rois:
+        path: ../electrosteel_pipe_detection_prod/config/caster2/rois.yaml
+
+    - id: caster3
+      number: 3
+      enabled: false
+      var_dir: ../electrosteel_pipe_detection_prod/var/caster3
+      rois:
+        path: ../electrosteel_pipe_detection_prod/config/caster3/rois.yaml
+
+    - id: caster4
+      number: 4
+      enabled: false
+      var_dir: ../electrosteel_pipe_detection_prod/var/caster4
+      rois:
+        path: ../electrosteel_pipe_detection_prod/config/caster4/rois.yaml
+
+    - id: caster5
+      number: 5
+      enabled: false
+      var_dir: ../electrosteel_pipe_detection_prod/var/caster5
+      rois:
+        path: ../electrosteel_pipe_detection_prod/config/caster5/rois.yaml
+
+    - id: caster6
+      number: 6
+      enabled: false
+      var_dir: ../electrosteel_pipe_detection_prod/var/caster6
+      rois:
+        path: ../electrosteel_pipe_detection_prod/config/caster6/rois.yaml
+
+    - id: caster7
+      number: 7
+      enabled: false
+      var_dir: ../electrosteel_pipe_detection_prod/var/caster7
+      rois:
+        path: ../electrosteel_pipe_detection_prod/config/caster7/rois.yaml
+
+    - id: caster8
+      number: 8
+      enabled: false
+      var_dir: ../electrosteel_pipe_detection_prod/var/caster8
+      rois:
+        path: ../electrosteel_pipe_detection_prod/config/caster8/rois.yaml

@@ -9,6 +9,8 @@ import numpy as np
 import pandas as pd
 import yaml
 
+from reports.common.config_loader import load_runtime_config
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
@@ -39,9 +41,11 @@ class VerifiedPipeExporter:
     DEFAULT_GATE_OPEN_MAX_INTERVAL_SECONDS = 120
     CLIENT_COLUMNS = ("Pipe Number", "Origin Time")
 
-    def __init__(self):
+    def __init__(self, cfg: dict | None = None, caster=None):
         self.root = Path(__file__).resolve().parents[2]
-        self.cfg = self._load_yaml(self.root / "config" / "runtime.yaml")
+        self.cfg = cfg or load_runtime_config()
+        self.caster = caster
+        self.caster_file_token = getattr(caster, "file_token", None)
 
         self.db_path = (self.root / self.cfg["database"]["path"]).resolve()
 
@@ -475,7 +479,8 @@ class VerifiedPipeExporter:
 
         timestamp = datetime.now().strftime("%H%M%S")
         shift_key = self._normalize_shift_key(shift)
-        filename = f"verified_pipes_{date_str.replace('-','')}_{shift_key}_{timestamp}.csv"
+        caster_part = f"_{self.caster_file_token}" if getattr(self, "caster_file_token", None) else ""
+        filename = f"verified_pipes{caster_part}_{date_str.replace('-','')}_{shift_key}_{timestamp}.csv"
         out_path = self.output_dir / filename
         client_df = self._build_client_csv_df(verified_df)
         client_df.to_csv(out_path, index=False)

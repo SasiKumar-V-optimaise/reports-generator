@@ -4,6 +4,7 @@ from pathlib import Path
 from unittest.mock import Mock, mock_open, patch
 
 from reports.gates import gate2_closed_position_report as gate2_module
+from reports.common.caster_config import CasterConfig
 from reports.gates.gate2_closed_position_report import (
     FrameCoverage,
     Gate2ClosedPositionReport,
@@ -279,15 +280,25 @@ class Gate2ClosedPositionReportTest(unittest.TestCase):
         send_mail.assert_called_once()
 
     def test_main_without_args_runs_recent_window_check(self):
+        caster = CasterConfig(
+            id="caster1",
+            number=1,
+            name="Caster 1",
+            enabled=True,
+            cfg={},
+        )
         fake_report = Mock()
         fake_report.export_recent.return_value = {"alert_count": 0}
 
         with (
-            patch.object(gate2_module, "Gate2ClosedPositionReport", return_value=fake_report),
+            patch.object(gate2_module, "load_runtime_config", return_value={"casters": {}}),
+            patch.object(gate2_module, "resolve_enabled_casters", return_value=[caster]),
+            patch.object(gate2_module, "Gate2ClosedPositionReport", return_value=fake_report) as report_cls,
             patch("sys.argv", ["gate2_closed_position_report.py"]),
         ):
             gate2_module.main()
 
+        report_cls.assert_called_once_with(cfg=caster.cfg, caster=caster)
         fake_report.export_recent.assert_called_once_with(
             minutes=None,
             end_time=None,

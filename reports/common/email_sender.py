@@ -2,15 +2,13 @@ import os
 import smtplib
 from email.message import EmailMessage
 from pathlib import Path
-import yaml
+
+from reports.common.config_loader import load_runtime_config
 
 
 class EmailSender:
-    def __init__(self):
-        root = Path(__file__).resolve().parents[2]
-        with open(root / "config" / "runtime.yaml") as f:
-            cfg = yaml.safe_load(f)
-
+    def __init__(self, cfg: dict | None = None):
+        cfg = cfg or load_runtime_config()
         self.email_cfg = cfg["email"]
         self.sender = self.email_cfg["sender"]
         self.recipients = self.email_cfg["recipients"]

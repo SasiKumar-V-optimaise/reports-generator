@@ -6,6 +6,8 @@ import logging
 from pathlib import Path
 from datetime import datetime, timedelta
 
+from reports.common.config_loader import load_runtime_config
+
 
 logger = logging.getLogger(__name__)
 
@@ -19,16 +21,16 @@ class ShiftVideoGenerator:
     """
 
     # ---------------- INIT ----------------
-    def __init__(self, date_str: str, shift: str):
+    def __init__(self, date_str: str, shift: str, cfg: dict | None = None, caster=None):
 
         self.date_str = date_str
         self.shift = shift.upper()
         self.date_obj = datetime.strptime(date_str, "%d-%m-%Y")
 
         self.root = Path(__file__).resolve().parents[2]
-
-        with open(self.root / "config/runtime.yaml") as f:
-            cfg = yaml.safe_load(f)
+        cfg = cfg or load_runtime_config()
+        self.caster = caster
+        self.caster_file_token = getattr(caster, "file_token", None)
 
         self.video_cfg = cfg["video"]
         self.image_root = (self.root / cfg["history"]["image_root"]).resolve()
@@ -39,10 +41,8 @@ class ShiftVideoGenerator:
         self.output_dir = self.root / self.video_cfg["output_dir"]
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
-        self.output_path = (
-            self.output_dir /
-            f"{date_str}_shift_{self.shift.lower()}.mp4"
-        )
+        caster_part = f"_{self.caster_file_token}" if self.caster_file_token else ""
+        self.output_path = self.output_dir / f"{date_str}{caster_part}_shift_{self.shift.lower()}.mp4"
 
         logger.info(
             "VideoGenerator initialized | date=%s | shift=%s",

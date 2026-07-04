@@ -8,6 +8,9 @@ from pathlib import Path
 
 import yaml
 
+from reports.common.caster_config import CasterConfig, caster_label, resolve_enabled_casters
+from reports.common.config_loader import load_runtime_config
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
@@ -94,9 +97,20 @@ class Gate2ClosedPositionReport:
     DEFAULT_GATE2_CLASS_ID = 3
     EPSILON = 1e-9
 
-    def __init__(self, config_path: str | Path | None = None):
+    def __init__(
+        self,
+        config_path: str | Path | None = None,
+        cfg: dict | None = None,
+        caster: CasterConfig | None = None,
+    ):
         self.root = PROJECT_ROOT
-        self.cfg = self._load_yaml(Path(config_path) if config_path else self.root / "config" / "runtime.yaml")
+        if cfg is not None:
+            self.cfg = cfg
+        elif config_path:
+            self.cfg = self._load_yaml(Path(config_path))
+        else:
+            self.cfg = load_runtime_config()
+        self.caster = caster
         self.report_cfg = _as_dict(self.cfg.get("gate2_closed_position_report"))
 
         self.interval_seconds = self._configured_interval_seconds()
@@ -875,9 +889,11 @@ class Gate2ClosedPositionReport:
         alert_count = sum(1 for row in rows if row["alert"])
         threshold_status = "BELOW_THRESHOLD" if alert_count else "WITHIN_LIMIT"
         threshold_value = round(float(self.threshold_percent), 2)
+        caster = getattr(self, "caster", None)
         return {
             "date": date_label,
             "shift": shift_label,
+            "caster_id": getattr(caster, "id", self.cfg.get("caster_id", "legacy")),
             "caster_number": self._caster_number(),
             "window_mode": window_mode,
             "window_start": start.strftime("%Y-%m-%d %H:%M:%S"),
@@ -905,6 +921,7 @@ class Gate2ClosedPositionReport:
         return "\n".join([
             f"Date              : {summary['date']}",
             f"Shift             : {summary['shift']}",
+            f"Caster id         : {summary.get('caster_id', 'legacy')}",
             f"Caster number     : {summary['caster_number']}",
             (
                 f"Interval seconds  : {summary['interval_seconds']} "
@@ -926,7 +943,10 @@ class Gate2ClosedPositionReport:
         if password_skip_reason:
             return {"sent": False, "skip_reason": password_skip_reason}
 
-        subject = f"Gate2 Closed Position Alert - {summary['shift']} - {summary['date']}"
+        subject = (
+            f"Gate2 Closed Position Alert - {caster_label(self.caster, self.cfg)} - "
+            f"{summary['shift']} - {summary['date']}"
+        )
         body = "\n".join([
             "Gate2 closed-position detection-inside-ROI percent is below the configured threshold.",
             "",
@@ -935,7 +955,7 @@ class Gate2ClosedPositionReport:
 
         from reports.common.email_sender import EmailSender
 
-        EmailSender().send_text(subject, body, recipients=recipients)
+        EmailSender(cfg=self.cfg).send_text(subject, body, recipients=recipients)
         return {"sent": True, "recipients": recipients}
 
     def _export_window(
@@ -1137,6 +1157,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Generate the gate2 closed-position coverage report")
     parser.add_argument("--date", help="DD-MM-YYYY")
     parser.add_argument("--shift", help="A/B/C or Shift_A/Shift_B/Shift_C")
+    parser.add_argument("--caster", help="Single caster id, for example caster1")
+    parser.add_argument("--casters", help="Comma-separated caster ids, for example caster1,caster2")
+    parser.add_argument("--all-casters", action="store_true", help="Run all enabled casters from runtime.yaml")
     parser.add_argument("--start", help="Optional window start time, HH:MM or HH:MM:SS")
     parser.add_argument("--stop", help="Optional window stop time, HH:MM or HH:MM:SS")
     parser.add_argument(
@@ -1157,29 +1180,42 @@ def main():
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(levelname)s | %(message)s")
 
-    report = Gate2ClosedPositionReport()
+    selected_ids = []
+    if args.caster:
+        selected_ids.append(args.caster)
+    if args.casters:
+        selected_ids.extend(part.strip() for part in args.casters.split(",") if part.strip())
+    if args.all_casters:
+        selected_ids = []
+
+    base_cfg = load_runtime_config()
+    casters = resolve_enabled_casters(base_cfg, selected_ids or None)
     manual_mode = any((args.date, args.shift, args.start, args.stop))
+    summaries = []
 
-    if manual_mode:
-        if args.last_minutes is not None or args.end_at:
-            parser.error("--last-minutes/--end-at cannot be combined with --date/--shift/--start/--stop")
-        if not args.date or not args.shift:
-            parser.error("Manual mode requires both --date and --shift")
-        summary = report.export(
-            args.date,
-            args.shift,
-            send_email=not args.no_email,
-            start_time=args.start,
-            stop_time=args.stop,
-        )
-    else:
-        summary = report.export_recent(
-            minutes=args.last_minutes,
-            end_time=report._parse_datetime(args.end_at, "--end-at") if args.end_at else None,
-            send_email=not args.no_email,
-        )
+    for caster in casters:
+        report = Gate2ClosedPositionReport(cfg=caster.cfg, caster=caster)
+        if manual_mode:
+            if args.last_minutes is not None or args.end_at:
+                parser.error("--last-minutes/--end-at cannot be combined with --date/--shift/--start/--stop")
+            if not args.date or not args.shift:
+                parser.error("Manual mode requires both --date and --shift")
+            summary = report.export(
+                args.date,
+                args.shift,
+                send_email=not args.no_email,
+                start_time=args.start,
+                stop_time=args.stop,
+            )
+        else:
+            summary = report.export_recent(
+                minutes=args.last_minutes,
+                end_time=report._parse_datetime(args.end_at, "--end-at") if args.end_at else None,
+                send_email=not args.no_email,
+            )
+        summaries.append(summary)
 
-    logger.info("Gate2 closed-position summary: %s", summary)
+    logger.info("Gate2 closed-position summaries: %s", summaries)
 
 
 if __name__ == "__main__":

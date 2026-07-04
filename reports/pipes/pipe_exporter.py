@@ -7,6 +7,8 @@ from pathlib import Path
 from datetime import datetime, timedelta
 from xml.sax.saxutils import escape
 
+from reports.common.config_loader import load_runtime_config
+
 
 logger = logging.getLogger(__name__)
 
@@ -26,9 +28,11 @@ class PipeExporter:
     DEFAULT_MIN_T_ORIGIN_GAP_SECONDS = 110  # 00:01:50
     DEFAULT_MAX_T_ORIGIN_GAP_SECONDS = 190  # 00:03:10
 
-    def __init__(self):
+    def __init__(self, cfg: dict | None = None, caster=None):
         self.root = Path(__file__).resolve().parents[2]
-        self.cfg = self._load_yaml(self.root / "config" / "runtime.yaml")
+        self.cfg = cfg or load_runtime_config()
+        self.caster = caster
+        self.caster_file_token = getattr(caster, "file_token", None)
         (
             self.min_t_origin_gap_seconds,
             self.max_t_origin_gap_seconds,
@@ -60,6 +64,10 @@ class PipeExporter:
     def _load_yaml(path: Path):
         with open(path, "r") as f:
             return yaml.safe_load(f)
+
+    def _filename(self, prefix: str, date_str: str, shift: str, timestamp: str, suffix: str) -> str:
+        caster_part = f"_{self.caster_file_token}" if self.caster_file_token else ""
+        return f"{prefix}{caster_part}_{date_str.replace('-','')}_{shift.lower()}_{timestamp}.{suffix}"
 
     @staticmethod
     def _first_configured(*values):
@@ -458,7 +466,7 @@ class PipeExporter:
         diagnosis_df = self._build_diagnosis_df(df)
 
         timestamp = datetime.now().strftime("%H%M%S")
-        filename = f"pipes_diagnosis_{date_str.replace('-','')}_{shift.lower()}_{timestamp}.xlsx"
+        filename = self._filename("pipes_diagnosis", date_str, shift, timestamp, "xlsx")
         out_path = self.output_dir / filename
         self._write_diagnosis_xlsx(diagnosis_df, out_path)
 
@@ -492,7 +500,7 @@ class PipeExporter:
 
         # ---------- FILE NAME ----------
         timestamp = datetime.now().strftime("%H%M%S")
-        filename = f"pipes_{date_str.replace('-','')}_{shift.lower()}_{timestamp}.csv"
+        filename = self._filename("pipes", date_str, shift, timestamp, "csv")
         out_path = self.output_dir / filename
         df.to_csv(out_path, index=False)
 
