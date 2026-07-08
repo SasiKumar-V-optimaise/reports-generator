@@ -569,7 +569,7 @@ class ShiftWorkflow:
     def load_selected_enabled_casters(self) -> list[CasterConfig]:
         return self.casters
 
-    def phase_raw_and_verified(self, casters: list[CasterConfig], run: ShiftRun):
+    def phase_raw_and_verified(self, casters: list[CasterConfig], run: ShiftRun, *, require_raw_email_for_verified: bool = True):
         force = os.getenv("FORCE_RERUN") == "1"
         for caster in casters:
             result = CasterRunResult(caster=caster)
@@ -619,13 +619,13 @@ class ShiftWorkflow:
                     self._record_error(run, result, "Email CSV failed")
                     logger.exception("CSV email failed | caster=%s", caster.id)
 
-            if result.csv_path and result.raw_email_sent:
+            if result.csv_path and (result.raw_email_sent or not require_raw_email_for_verified):
                 try:
                     self._send_verified_pipes_report(run, result)
                 except Exception:
                     self._record_error(run, result, "Verified pipes email failed")
                     logger.exception("Verified pipes failed | caster=%s", caster.id)
-            elif result.csv_path:
+            elif result.csv_path and require_raw_email_for_verified:
                 state["emailed_verified_pipes"] = False
                 state["verified_pipes_skip_reason"] = "Raw CSV email was not sent"
                 self._save_state(run, caster, state)
@@ -804,6 +804,17 @@ class ShiftWorkflow:
             result.state["finished_at"] = datetime.now().isoformat(timespec="seconds")
             self._save_state(run, caster, result.state)
 
+    def run_verified_only(self, run: ShiftRun):
+        casters = self.load_selected_enabled_casters()
+        logger.info("Verified-only workflow start | date=%s | shift=%s | casters=%s", run.date_str, run.shift_name, [c.id for c in casters])
+        self.phase_raw_and_verified(casters, run, require_raw_email_for_verified=False)
+        for caster in casters:
+            result = self.results.setdefault(caster.id, CasterRunResult(caster=caster))
+            result.state["status"] = "partial_failure" if result.errors else "success"
+            result.state["finished_at"] = datetime.now().isoformat(timespec="seconds")
+            self._save_state(run, caster, result.state)
+        logger.info("Verified-only workflow finished")
+
     def run_diagnosis_only(self, run: ShiftRun):
         casters = self.load_selected_enabled_casters()
         logger.info("Diagnosis-only workflow start | date=%s | shift=%s | casters=%s", run.date_str, run.shift_name, [c.id for c in casters])
@@ -865,6 +876,7 @@ def main():
     parser.add_argument("--date")
     parser.add_argument("--shift")
     parser.add_argument("--diagnosis-only", action="store_true")
+    parser.add_argument("--verified-only", action="store_true", help="Run raw pipe CSV and verified pipes only")
     parser.add_argument("--caster", help="Single caster id, for example caster1")
     parser.add_argument("--casters", help="Comma-separated caster ids, for example caster1,caster2,caster8")
     parser.add_argument("--all-casters", action="store_true")
@@ -879,6 +891,9 @@ def main():
         print(wf.validate_config())
         return
 
+    if args.diagnosis_only and args.verified_only:
+        parser.error("--diagnosis-only and --verified-only cannot be used together")
+
     if args.date and args.shift:
         run = ShiftRun(args.date, ShiftWorkflow._normalize_shift_name(args.shift))
     else:
@@ -887,7 +902,9 @@ def main():
             logger.info("Not a scheduled shift time. Exiting.")
             return
 
-    if args.diagnosis_only:
+    if args.verified_only:
+        wf.run_verified_only(run)
+    elif args.diagnosis_only:
         wf.run_diagnosis_only(run)
     else:
         wf.run(run)

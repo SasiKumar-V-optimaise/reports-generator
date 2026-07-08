@@ -367,6 +367,62 @@ class WorkflowOrderingTest(TestCase):
             ],
         )
 
+    def test_verified_only_runs_raw_and_verified_without_raw_email_success(self):
+        events = []
+
+        class FakePipeExporter:
+            def __init__(self, cfg=None, caster=None):
+                self.caster = caster
+
+            def export(self, date_str, shift):
+                events.append(f"{self.caster.id}_raw_export")
+                return Path(f"{self.caster.id}.csv"), 10
+
+        class FakeVerifiedExporter:
+            def __init__(self, cfg=None, caster=None):
+                self.caster = caster
+
+            def export(self, date_str, shift, csv_path, mode=None):
+                events.append(f"{self.caster.id}_verified_export")
+                return Path(f"{self.caster.id}_verified.csv"), {
+                    "verified_count": 9,
+                    "removed_count": 1,
+                    "loadcell_missing_records": [],
+                }
+
+        class FakeMailer:
+            def __init__(self, cfg=None):
+                pass
+
+            def send_csv(self, subject, body, csv_path, recipients=None):
+                events.append("verified_email")
+
+        def skip_raw_email(workflow, run, result):
+            events.append(f"{result.caster.id}_raw_email_skipped")
+            result.state["emailed_csv"] = False
+            workflow._save_state(run, result.caster, result.state)
+            return False
+
+        with (
+            TemporaryDirectory() as tmp,
+            patch.object(report_workflow, "PipeExporter", FakePipeExporter),
+            patch.object(report_workflow, "VerifiedPipeExporter", FakeVerifiedExporter),
+            patch.object(report_workflow, "EmailSender", FakeMailer),
+            patch.object(ShiftWorkflow, "_send_raw_csv_email", skip_raw_email),
+        ):
+            wf = ShiftWorkflow(cfg=_base_cfg(), selected_ids=["caster1"])
+            wf.state_dir = Path(tmp)
+            wf.run_verified_only(ShiftRun("02-07-2026", "Shift_A"))
+
+        self.assertEqual(
+            events,
+            [
+                "caster1_raw_export",
+                "caster1_raw_email_skipped",
+                "caster1_verified_export",
+                "verified_email",
+            ],
+        )
     def test_failure_isolation_keeps_later_casters_running(self):
         events = []
 
