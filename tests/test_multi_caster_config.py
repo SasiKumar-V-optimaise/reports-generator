@@ -290,6 +290,20 @@ class WorkflowOrderingTest(TestCase):
         wf.state_dir = Path(tmp)
         return wf
 
+    def test_email_subject_prefix_only_in_test_mode(self):
+        with TemporaryDirectory() as tmp:
+            normal_wf = self._workflow(tmp)
+            test_wf = self._workflow(tmp, test_mode=True)
+
+            self.assertEqual(normal_wf._email_subject("Pipe Report CSV - Caster 2"), "Pipe Report CSV - Caster 2")
+            self.assertEqual(test_wf._email_subject("Pipe Report CSV - Caster 2"), "[TEST] Pipe Report CSV - Caster 2")
+
+    def test_truthy_non_boolean_does_not_enable_test_subject_prefix(self):
+        wf = ShiftWorkflow(cfg=_base_cfg(), test_mode="true")
+
+        self.assertFalse(wf.test_mode)
+        self.assertEqual(wf._email_subject("Pipe Report CSV - Caster 2"), "Pipe Report CSV - Caster 2")
+
     def test_workflow_orders_raw_verified_then_diagnosis_then_videos(self):
         events = []
 

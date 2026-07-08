@@ -104,7 +104,7 @@ class ShiftWorkflow:
     def __init__(self, cfg: dict | None = None, selected_ids: list[str] | None = None, *, test_mode: bool = False):
         self.root = PROJECT_ROOT
         self.cfg = cfg or load_runtime_config()
-        self.test_mode = test_mode
+        self.test_mode = test_mode is True
         self.multi_caster_mode = isinstance(self.cfg.get("casters"), dict)
         self.casters = resolve_enabled_casters(self.cfg, selected_ids)
         self.state_dir = self.root / "outputs" / "state"
@@ -189,7 +189,7 @@ class ShiftWorkflow:
         return "No email.test_recipients configured for --test"
 
     def _email_subject(self, subject: str) -> str:
-        return f"[TEST] {subject}" if self.test_mode else subject
+        return f"[TEST] {subject}" if self.test_mode is True else subject
 
     @staticmethod
     def _verified_pipes_mode(cfg: dict) -> str:
@@ -894,7 +894,7 @@ class ShiftWorkflow:
 
     def run_verified_only(self, run: ShiftRun):
         casters = self.load_selected_enabled_casters()
-        logger.info("Verified-only workflow start | date=%s | shift=%s | casters=%s", run.date_str, run.shift_name, [c.id for c in casters])
+        logger.info("Verified-only workflow start | date=%s | shift=%s | casters=%s | test=%s", run.date_str, run.shift_name, [c.id for c in casters], self.test_mode)
         self.phase_raw_and_verified(casters, run, require_raw_email_for_verified=False)
         for caster in casters:
             result = self.results.setdefault(caster.id, CasterRunResult(caster=caster))
@@ -905,7 +905,7 @@ class ShiftWorkflow:
 
     def run_diagnosis_only(self, run: ShiftRun):
         casters = self.load_selected_enabled_casters()
-        logger.info("Diagnosis-only workflow start | date=%s | shift=%s | casters=%s", run.date_str, run.shift_name, [c.id for c in casters])
+        logger.info("Diagnosis-only workflow start | date=%s | shift=%s | casters=%s | test=%s", run.date_str, run.shift_name, [c.id for c in casters], self.test_mode)
         self.phase_diagnosis(casters, run)
         for caster in casters:
             result = self.results.setdefault(caster.id, CasterRunResult(caster=caster))
@@ -916,7 +916,7 @@ class ShiftWorkflow:
 
     def run(self, run: ShiftRun):
         casters = self.load_selected_enabled_casters()
-        logger.info("Workflow start | date=%s | shift=%s | casters=%s", run.date_str, run.shift_name, [c.id for c in casters])
+        logger.info("Workflow start | date=%s | shift=%s | casters=%s | test=%s", run.date_str, run.shift_name, [c.id for c in casters], self.test_mode)
         self.phase_raw_and_verified(casters, run)
         self.phase_csv_uploads(casters, run)
         self.phase_diagnosis(casters, run)
