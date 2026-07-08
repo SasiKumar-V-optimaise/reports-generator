@@ -412,7 +412,9 @@ class WorkflowOrderingTest(TestCase):
         ):
             wf = ShiftWorkflow(cfg=_base_cfg(), selected_ids=["caster1"])
             wf.state_dir = Path(tmp)
-            wf.run_verified_only(ShiftRun("02-07-2026", "Shift_A"))
+            run = ShiftRun("02-07-2026", "Shift_A")
+            wf._save_state(run, wf.casters[0], {"status": "success", "diagnosis_summary": {"pipe_count": 10}})
+            wf.run_verified_only(run)
 
         self.assertEqual(
             events,

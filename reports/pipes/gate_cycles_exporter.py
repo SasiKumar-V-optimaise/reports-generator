@@ -47,6 +47,14 @@ def to_ist(ts):
     return datetime.fromtimestamp(ts, tz=timezone.utc).astimezone(IST).strftime("%Y-%m-%d %H:%M:%S")
 
 
+def table_exists(cursor, table_name: str) -> bool:
+    row = cursor.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+        (table_name,),
+    ).fetchone()
+    return row is not None
+
+
 def main():
 
     parser = argparse.ArgumentParser()
@@ -69,17 +77,45 @@ def main():
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
 
-    query = """
-    SELECT id, gate_name, t_open
-    FROM gate_open_events
-    WHERE t_open BETWEEN ? AND ?
-    ORDER BY t_open
-    """
-
-    rows = cursor.execute(query, (start_ts, end_ts)).fetchall()
+    rows = []
+    source_table = "gate_openings"
+    if table_exists(cursor, "gate_openings"):
+        query = """
+        SELECT id, gate_name, t_open
+        FROM gate_openings
+        WHERE t_open BETWEEN ? AND ?
+        ORDER BY t_open
+        """
+        rows = cursor.execute(query, (start_ts, end_ts)).fetchall()
+        source_table = "gate_openings"
+    if not rows and table_exists(cursor, "gate_open_events"):
+        query = """
+        SELECT id, gate_name, t_open
+        FROM gate_open_events
+        WHERE t_open BETWEEN ? AND ?
+        ORDER BY t_open
+        """
+        rows = cursor.execute(query, (start_ts, end_ts)).fetchall()
+        source_table = "gate_open_events"
+    if not rows and table_exists(cursor, "gate_cycles"):
+        query = """
+        SELECT id, gate_name, t_open
+        FROM (
+            SELECT id, 'gate1' AS gate_name, t_gate1_open AS t_open
+            FROM gate_cycles
+            WHERE t_gate1_open BETWEEN ? AND ?
+            UNION ALL
+            SELECT id, 'gate2' AS gate_name, t_gate2_open AS t_open
+            FROM gate_cycles
+            WHERE t_gate2_open BETWEEN ? AND ?
+        )
+        ORDER BY t_open
+        """
+        rows = cursor.execute(query, (start_ts, end_ts, start_ts, end_ts)).fetchall()
+        source_table = "gate_cycles"
 
     caster_part = f"_{caster.file_token}" if caster.file_token else ""
-    csv_name = f"gate_open_events{caster_part}_{args.date}_shift_{args.shift}.csv"
+    csv_name = f"{source_table}{caster_part}_{args.date}_shift_{args.shift}.csv"
 
     with open(csv_name, "w", newline="") as f:
         writer = csv.writer(f)
@@ -99,7 +135,7 @@ def main():
 
     conn.close()
 
-    print(f"Exported {len(rows)} rows to {csv_name}")
+    print(f"Exported {len(rows)} rows from {source_table} to {csv_name}")
 
 
 if __name__ == "__main__":

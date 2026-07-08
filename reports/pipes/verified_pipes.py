@@ -125,15 +125,41 @@ class VerifiedPipeExporter:
 
         return int(start.timestamp()), int(end.timestamp()), start, end
 
-    def _build_gate_query(self) -> str:
+    @staticmethod
+    def _table_exists(con: sqlite3.Connection, table_name: str) -> bool:
+        row = con.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+            (table_name,),
+        ).fetchone()
+        return row is not None
+
+    @staticmethod
+    def _empty_gate_events_df() -> pd.DataFrame:
+        return pd.DataFrame(columns=["gate_name", "t_open", "t_open_IST"])
+
+    def _build_gate_openings_query(self, table_name: str) -> str:
         h, m = self.IST_OFFSET
         return f"""
         SELECT
             gate_name,
+            t_open,
             datetime(t_open,'unixepoch','{h}','{m}') AS t_open_IST
-        FROM gate_open_events
+        FROM {table_name}
         WHERE t_open BETWEEN ? AND ?
         ORDER BY t_open;
+        """
+
+    def _build_gate_cycles_query(self) -> str:
+        h, m = self.IST_OFFSET
+        return f"""
+        SELECT
+            'gate2' AS gate_name,
+            t_gate2_open AS t_open,
+            datetime(t_gate2_open,'unixepoch','{h}','{m}') AS t_open_IST,
+            datetime(t_gate2_open,'unixepoch','{h}','{m}') AS t_gate2_open_IST
+        FROM gate_cycles
+        WHERE t_gate2_open BETWEEN ? AND ?
+        ORDER BY t_gate2_open;
         """
 
     def _fetch_gate_events_df(self, date_str: str, shift: str) -> tuple[pd.DataFrame, datetime]:
@@ -143,7 +169,31 @@ class VerifiedPipeExporter:
             raise FileNotFoundError(f"Database not found: {self.db_path}")
 
         with sqlite3.connect(self.db_path) as con:
-            gate_df = pd.read_sql_query(self._build_gate_query(), con, params=(start_ts, end_ts))
+            gate_df = None
+            if self._table_exists(con, "gate_openings"):
+                gate_df = pd.read_sql_query(
+                    self._build_gate_openings_query("gate_openings"),
+                    con,
+                    params=(start_ts, end_ts),
+                )
+            if (gate_df is None or gate_df.empty) and self._table_exists(con, "gate_open_events"):
+                gate_df = pd.read_sql_query(
+                    self._build_gate_openings_query("gate_open_events"),
+                    con,
+                    params=(start_ts, end_ts),
+                )
+            if (gate_df is None or gate_df.empty) and self._table_exists(con, "gate_cycles"):
+                gate_df = pd.read_sql_query(
+                    self._build_gate_cycles_query(),
+                    con,
+                    params=(start_ts, end_ts),
+                )
+            if gate_df is None:
+                logger.warning(
+                    "No gate opening table found; verified-pipes G2 fallback will have no gate events | db=%s",
+                    self.db_path,
+                )
+                gate_df = self._empty_gate_events_df()
 
         return gate_df, end_dt
 

@@ -575,9 +575,12 @@ class ShiftWorkflow:
             result = CasterRunResult(caster=caster)
             self.results[caster.id] = result
             state = self._load_state(run, caster)
-            if state.get("status") == "success" and not force:
+            raw_verified_done = bool(state.get("csv_path") and state.get("verified_pipes_csv_path"))
+            if state.get("status") == "success" and raw_verified_done and not force:
                 logger.info("Already success for %s %s %s. Skipping raw/verified.", caster.id, run.date_str, run.shift_name)
                 result.state = state
+                result.csv_path = state.get("csv_path")
+                result.verified_path = state.get("verified_pipes_csv_path")
                 result.pipe_count = state.get("pipe_count", 0)
                 result.csv_drive_link = state.get("csv_drive_link")
                 result.verified_summary = state.get("verified_pipes_summary")
