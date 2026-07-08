@@ -151,13 +151,23 @@ class PipeExporter:
 
         return int(start.timestamp()), int(end.timestamp()), start, end
 
-    def _build_query(self):
+    @staticmethod
+    def _table_columns(con: sqlite3.Connection, table_name: str) -> set[str]:
+        rows = con.execute(f"PRAGMA table_info({table_name})").fetchall()
+        return {str(row[1]) for row in rows}
+
+    def _build_query(self, pipe_columns: set[str] | None = None):
         h, m = self.IST_OFFSET
+        pipe_checkpoint_expr = (
+            "pipe_checkpoint"
+            if pipe_columns is None or "pipe_checkpoint" in pipe_columns
+            else "0 AS pipe_checkpoint"
+        )
         return f"""
         SELECT
             pipe_uid,
             origin,
-            pipe_checkpoint,
+            {pipe_checkpoint_expr},
             datetime(t_origin,'unixepoch','{h}','{m}') AS t_origin,
             datetime(t_loadcell_enter,'unixepoch','{h}','{m}') AS t_loadcell_enter,
             datetime(t_loadcell_exit,'unixepoch','{h}','{m}') AS t_loadcell_exit,
@@ -174,9 +184,8 @@ class PipeExporter:
     def _fetch_shift_df(self, date_str: str, shift: str):
         start_ts, end_ts, start_dt, end_dt = self._shift_window(date_str, shift)
 
-        query = self._build_query()
-
         with sqlite3.connect(self.db_path) as con:
+            query = self._build_query(self._table_columns(con, "pipes"))
             df = pd.read_sql_query(query, con, params=(start_ts, end_ts))
 
         return df, start_dt, end_dt

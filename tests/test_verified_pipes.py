@@ -36,6 +36,32 @@ class VerifiedPipeExporterTest(unittest.TestCase):
         self.assertEqual(summary["confirmed_by_checkpoint_count"], 1)
         self.assertEqual(summary["gate_fallback_checked_count"], 0)
 
+    def test_missing_checkpoint_column_defaults_to_g2_window(self):
+        pipe_df = pd.DataFrame([
+            {
+                "pipe_uid": "legacy-schema-pass",
+                "t_origin": "2026-06-26 22:00:00",
+                "t_loadcell_enter": "",
+                "t_loadcell_exit": "",
+            },
+        ])
+        gate_df = pd.DataFrame([
+            {
+                "gate_name": "g2",
+                "t_open_IST": "2026-06-26 22:01:00",
+            },
+        ])
+
+        verified_df, summary = self._exporter()._apply_gate_verification(
+            pipe_df,
+            gate_df,
+            mode="loadcell",
+            shift_end=datetime(2026, 6, 27, 6, 0, 0),
+        )
+
+        self.assertEqual(verified_df["pipe_uid"].tolist(), ["legacy-schema-pass"])
+        self.assertEqual(summary["pipe_checkpoint_count"], 0)
+        self.assertEqual(summary["confirmed_by_gate2_count"], 1)
     def test_missing_loadcell_checkpoint_zero_uses_g2_window(self):
         pipe_df = pd.DataFrame([
             {

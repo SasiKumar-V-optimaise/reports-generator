@@ -243,7 +243,7 @@ class VerifiedPipeExporter:
 
     def _pipe_checkpoint_mask(self, pipe_df: pd.DataFrame) -> pd.Series:
         if self.CHECKPOINT_COLUMN not in pipe_df.columns:
-            raise ValueError(f"Pipe CSV missing required column: {self.CHECKPOINT_COLUMN}")
+            return pd.Series(False, index=pipe_df.index)
         values = pipe_df[self.CHECKPOINT_COLUMN]
         truthy_text = values.astype("string").str.strip().str.lower().isin({"true", "yes"})
         return pd.to_numeric(values, errors="coerce").eq(1) | truthy_text

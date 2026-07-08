@@ -1,3 +1,5 @@
+import sqlite3
+from datetime import datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest import TestCase
@@ -166,6 +168,61 @@ class MultiCasterConfigTest(TestCase):
 
         self.assertIn("verified_pipes_caster1_02072026_shift_a_", out_path.name)
 
+    def test_pipe_exporter_defaults_missing_pipe_checkpoint_to_zero(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            db_path = root / "pipes.db"
+            con = sqlite3.connect(db_path)
+            try:
+                con.execute(
+                    """
+                    CREATE TABLE pipes (
+                        pipe_uid TEXT,
+                        origin TEXT,
+                        t_origin INTEGER,
+                        t_loadcell_enter INTEGER,
+                        t_loadcell_exit INTEGER,
+                        weight REAL,
+                        weight_quality TEXT,
+                        weight_samples INTEGER,
+                        state TEXT,
+                        last_seen_ts INTEGER
+                    )
+                    """
+                )
+                ts = int(datetime(2026, 7, 2, 6, 1).timestamp())
+                con.execute(
+                    """
+                    INSERT INTO pipes (
+                        pipe_uid,
+                        origin,
+                        t_origin,
+                        t_loadcell_enter,
+                        t_loadcell_exit,
+                        weight,
+                        weight_quality,
+                        weight_samples,
+                        state,
+                        last_seen_ts
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    ("p1", "origin-1", ts, None, None, 100.0, "ok", 3, "done", ts),
+                )
+                con.commit()
+            finally:
+                con.close()
+
+            cfg = {
+                "database": {"path": str(db_path)},
+                "history": {"shifts": _base_cfg()["history"]["shifts"]},
+                "outputs": {"csv_dir": str(root / "csv")},
+            }
+            out_path, pipe_count = PipeExporter(cfg=cfg).export("02-07-2026", "Shift_A")
+
+            exported = pd.read_csv(out_path)
+
+        self.assertEqual(pipe_count, 1)
+        self.assertEqual(exported["pipe_checkpoint"].tolist(), [0])
     def test_video_generator_uses_caster_specific_history_root(self):
         caster = resolve_enabled_casters(_base_cfg(), ["caster2"])[0]
         generator = ShiftVideoGenerator("02-07-2026", "A", cfg=caster.cfg, caster=caster)
