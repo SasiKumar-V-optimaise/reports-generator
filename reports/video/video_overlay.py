@@ -8,6 +8,7 @@ from pathlib import Path
 from datetime import datetime, timedelta
 
 from reports.common.config_loader import load_runtime_config
+from reports.common.caster_config import resolve_enabled_casters
 
 
 logger = logging.getLogger(__name__)
@@ -94,6 +95,13 @@ class ShiftVideoOverlayGenerator:
 
         self.root = Path(__file__).resolve().parents[2]
         cfg = cfg or load_runtime_config()
+        if (
+            caster is None
+            and not (cfg.get("history") or {}).get("image_root")
+            and isinstance(cfg.get("casters"), dict)
+        ):
+            caster = resolve_enabled_casters(cfg)[0]
+            cfg = caster.cfg
         self.caster = caster
         self.caster_file_token = getattr(caster, "file_token", None)
 

@@ -1,10 +1,4 @@
-
-database:
-  path: ../electrosteel_pipe_detection_prod/var/pipes.db
-
 history:
-  image_root: ../electrosteel_pipe_detection_prod/var/history
-
   shifts:
     - name: Shift_A
       start: "06:00"
@@ -19,7 +13,6 @@ history:
       end: "06:00"
 
 rois:
-  path: ../electrosteel_pipe_detection_prod/config/rois.yaml
   # Coordinate space used when the ROI YAML was saved, not the display/window size.
   source_resolution:
     width: 1440
@@ -121,6 +114,8 @@ casters:
       number: 1
       enabled: true
       var_dir: ../electrosteel_pipe_detection_prod/var/caster1
+      database:
+        path: ../electrosteel_pipe_detection_prod/var/pipes.db
       rois:
         path: ../electrosteel_pipe_detection_prod/config/caster1/rois.yaml
 
@@ -128,6 +123,8 @@ casters:
       number: 2
       enabled: true
       var_dir: ../electrosteel_pipe_detection_prod/var/caster2
+      database:
+        path: ../electrosteel_pipe_detection_prod/var/pipes.db
       rois:
         path: ../electrosteel_pipe_detection_prod/config/caster2/rois.yaml
 
@@ -135,6 +132,8 @@ casters:
       number: 3
       enabled: false
       var_dir: ../electrosteel_pipe_detection_prod/var/caster3
+      database:
+        path: ../electrosteel_pipe_detection_prod/var/pipes.db
       rois:
         path: ../electrosteel_pipe_detection_prod/config/caster3/rois.yaml
 
@@ -142,6 +141,8 @@ casters:
       number: 4
       enabled: false
       var_dir: ../electrosteel_pipe_detection_prod/var/caster4
+      database:
+        path: ../electrosteel_pipe_detection_prod/var/pipes.db
       rois:
         path: ../electrosteel_pipe_detection_prod/config/caster4/rois.yaml
 
@@ -149,6 +150,8 @@ casters:
       number: 5
       enabled: false
       var_dir: ../electrosteel_pipe_detection_prod/var/caster5
+      database:
+        path: ../electrosteel_pipe_detection_prod/var/pipes.db
       rois:
         path: ../electrosteel_pipe_detection_prod/config/caster5/rois.yaml
 
@@ -156,6 +159,8 @@ casters:
       number: 6
       enabled: false
       var_dir: ../electrosteel_pipe_detection_prod/var/caster6
+      database:
+        path: ../electrosteel_pipe_detection_prod/var/pipes.db
       rois:
         path: ../electrosteel_pipe_detection_prod/config/caster6/rois.yaml
 
@@ -163,6 +168,8 @@ casters:
       number: 7
       enabled: false
       var_dir: ../electrosteel_pipe_detection_prod/var/caster7
+      database:
+        path: ../electrosteel_pipe_detection_prod/var/pipes.db
       rois:
         path: ../electrosteel_pipe_detection_prod/config/caster7/rois.yaml
 
@@ -170,5 +177,7 @@ casters:
       number: 8
       enabled: false
       var_dir: ../electrosteel_pipe_detection_prod/var/caster8
+      database:
+        path: ../electrosteel_pipe_detection_prod/var/pipes.db
       rois:
         path: ../electrosteel_pipe_detection_prod/config/caster8/rois.yaml
