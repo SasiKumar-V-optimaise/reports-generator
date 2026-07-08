@@ -69,6 +69,9 @@ email:
     - karikutisasikumar1301@gmail.com
     - shyamsundar.pilli@v-optimai.com
     - aakashpalina2019@gmail.com
+  # Used by --test; production, diagnosis, and verified lists are not used in test mode.
+  test_recipients:
+    - karikutisasikumar1301@gmail.com
   # Diagnosis CSV is sent only to this list. Keep [] to skip diagnosis email.
   diagnosis_recipients: 
     - punithsai2001@gmail.com

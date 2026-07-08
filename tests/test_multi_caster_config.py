@@ -41,6 +41,7 @@ def _base_cfg():
             "sender": "sender@example.com",
             "password": "secret",
             "recipients": ["ops@example.com"],
+            "test_recipients": ["test@example.com"],
             "diagnosis_recipients": ["diag@example.com"],
             "send_csv_attachment": True,
             "smtp_server": "smtp.example.com",
@@ -272,8 +273,8 @@ class MultiCasterConfigTest(TestCase):
 
 
 class WorkflowOrderingTest(TestCase):
-    def _workflow(self, tmp):
-        wf = ShiftWorkflow(cfg=_base_cfg())
+    def _workflow(self, tmp, *, test_mode=False):
+        wf = ShiftWorkflow(cfg=_base_cfg(), test_mode=test_mode)
         wf.state_dir = Path(tmp)
         return wf
 
@@ -367,6 +368,119 @@ class WorkflowOrderingTest(TestCase):
             ],
         )
 
+    def test_test_mode_routes_full_workflow_mail_to_test_recipients(self):
+        deliveries = []
+
+        class FakePipeExporter:
+            def __init__(self, cfg=None, caster=None):
+                self.caster = caster
+
+            def export(self, date_str, shift):
+                return Path(f"{self.caster.id}.csv"), 10
+
+            def export_diagnosis(self, date_str, shift):
+                return Path(f"{self.caster.id}.xlsx"), {
+                    "pipe_count": 10,
+                    "abnormal_count": 0,
+                    "t_origin_gap_abnormal_count": 0,
+                    "t_origin_gap_too_slow_count": 0,
+                    "t_origin_gap_too_fast_count": 0,
+                    "loadcell_missing_count": 0,
+                }
+
+        class FakeVerifiedExporter:
+            def __init__(self, cfg=None, caster=None):
+                self.caster = caster
+
+            def export(self, date_str, shift, csv_path, mode=None):
+                return Path(f"{self.caster.id}_verified.csv"), {
+                    "verified_count": 9,
+                    "removed_count": 1,
+                    "loadcell_missing_records": [],
+                }
+
+        class FakeMailer:
+            def __init__(self, cfg=None):
+                pass
+
+            def send_csv(self, subject, body, csv_path, recipients=None):
+                deliveries.append((subject, tuple(recipients or [])))
+
+            def send(self, subject, body, attachments=None, recipients=None):
+                deliveries.append((subject, tuple(recipients or [])))
+
+        class FakeUploader:
+            def __init__(self, cfg=None, caster=None):
+                self.caster = caster
+
+            def upload_csv(self, path):
+                return f"https://drive/{self.caster.id}/csv"
+
+            def upload_video(self, path):
+                return f"https://drive/{self.caster.id}/video"
+
+        class FakeVideoGenerator:
+            def __init__(self, date_str, shift, cfg=None, caster=None):
+                self.caster = caster
+
+            def generate(self):
+                return f"{self.caster.id}.mp4"
+
+        with (
+            TemporaryDirectory() as tmp,
+            patch.object(report_workflow, "PipeExporter", FakePipeExporter),
+            patch.object(report_workflow, "VerifiedPipeExporter", FakeVerifiedExporter),
+            patch.object(report_workflow, "EmailSender", FakeMailer),
+            patch.object(report_workflow, "GDriveUploader", FakeUploader),
+            patch.object(report_workflow, "ShiftVideoGenerator", FakeVideoGenerator),
+        ):
+            wf = self._workflow(tmp, test_mode=True)
+            wf.run(ShiftRun("02-07-2026", "Shift_A"))
+
+        self.assertEqual([recipients for _, recipients in deliveries], [("test@example.com",)] * 7)
+        self.assertTrue(all(subject.startswith("[TEST] ") for subject, _ in deliveries))
+
+    def test_verified_only_test_mode_routes_csv_mail_to_test_recipients(self):
+        deliveries = []
+
+        class FakePipeExporter:
+            def __init__(self, cfg=None, caster=None):
+                self.caster = caster
+
+            def export(self, date_str, shift):
+                return Path(f"{self.caster.id}.csv"), 10
+
+        class FakeVerifiedExporter:
+            def __init__(self, cfg=None, caster=None):
+                self.caster = caster
+
+            def export(self, date_str, shift, csv_path, mode=None):
+                return Path(f"{self.caster.id}_verified.csv"), {
+                    "verified_count": 9,
+                    "removed_count": 1,
+                    "loadcell_missing_records": [],
+                }
+
+        class FakeMailer:
+            def __init__(self, cfg=None):
+                pass
+
+            def send_csv(self, subject, body, csv_path, recipients=None):
+                deliveries.append((subject, tuple(recipients or [])))
+
+        with (
+            TemporaryDirectory() as tmp,
+            patch.object(report_workflow, "PipeExporter", FakePipeExporter),
+            patch.object(report_workflow, "VerifiedPipeExporter", FakeVerifiedExporter),
+            patch.object(report_workflow, "EmailSender", FakeMailer),
+        ):
+            wf = ShiftWorkflow(cfg=_base_cfg(), selected_ids=["caster2"], test_mode=True)
+            wf.state_dir = Path(tmp)
+            wf.run_verified_only(ShiftRun("02-07-2026", "Shift_A"))
+
+        self.assertEqual([recipients for _, recipients in deliveries], [("test@example.com",)] * 2)
+        self.assertTrue(all(subject.startswith("[TEST] ") for subject, _ in deliveries))
+
     def test_verified_only_runs_raw_and_verified_without_raw_email_success(self):
         events = []
 
@@ -425,6 +539,7 @@ class WorkflowOrderingTest(TestCase):
                 "verified_email",
             ],
         )
+
     def test_failure_isolation_keeps_later_casters_running(self):
         events = []
 
