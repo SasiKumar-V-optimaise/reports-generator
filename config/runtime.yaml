@@ -55,6 +55,7 @@ verified_pipe_records_recipients:
   - sivakumar.p@electrosteel.com
   - dipquality@electrosteel.com
   - swsdp@electrosteel.com
+  - info@v-optimai.com
 
 email:
   smtp_server: smtp.gmail.com
@@ -69,6 +70,7 @@ email:
     - karikutisasikumar1301@gmail.com
     - shyamsundar.pilli@v-optimai.com
     - aakashpalina2019@gmail.com
+    - sridharcharanchekka@gmail.com
   # Used by --test; production, diagnosis, and verified lists are not used in test mode.
   test_recipients:
     - karikutisasikumar1301@gmail.com
@@ -76,8 +78,10 @@ email:
   diagnosis_recipients: 
     - punithsai2001@gmail.com
     - karikutisasikumar1301@gmail.com
+    - info@v-optimai.com
     - shyamsundar.pilli@v-optimai.com
     - aakashpalina2019@gmail.com
+    - sridharcharanchekka@gmail.com
    
 video:
   fps: 10
