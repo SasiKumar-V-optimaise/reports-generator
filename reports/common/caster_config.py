@@ -147,7 +147,7 @@ def build_caster_runtime_config(base_cfg: dict, caster_item: dict, defaults: dic
     }
 
     if var_dir:
-        database_file = defaults.get("database_file", "pipes.db")
+        database_file = _format_template(defaults.get("database_file", "pipes.db"), context)
         history_dir = defaults.get("history_dir", "history")
         if not _item_has_path(item, ("database", "path")) and _nested_get(defaults, ("database", "path")) is None:
             _nested_set(cfg, ("database", "path"), _join_path(var_dir, database_file))

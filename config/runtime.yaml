@@ -102,7 +102,7 @@ casters:
   defaults:
     enabled: false
     var_root: ../electrosteel_pipe_detection_prod/var
-    database_file: pipes.db
+    database_file: caster_{number}_pipes.db
     history_dir: history
     outputs:
       csv_dir_template: outputs/{caster_id}/csv

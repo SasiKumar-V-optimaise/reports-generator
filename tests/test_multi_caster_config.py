@@ -107,6 +107,18 @@ class MultiCasterConfigTest(TestCase):
         self.assertEqual(caster.cfg["gdrive"]["videos_dir"], "Pipe_count_caster1_vid")
         self.assertEqual(deep_merge({"a": {"b": 1}}, {"a": {"c": 2}}), {"a": {"b": 1, "c": 2}})
 
+    def test_database_file_template_resolves_from_caster_number(self):
+        cfg = _base_cfg()
+        cfg["casters"]["defaults"]["database_file"] = "caster_{number}_pipes.db"
+        cfg["casters"]["items"][1]["var_dir"] = "../producer/var/caster_2"
+
+        caster = resolve_enabled_casters(cfg, ["caster2"])[0]
+
+        self.assertEqual(
+            Path(caster.cfg["database"]["path"]).as_posix(),
+            "../producer/var/caster_2/caster_2_pipes.db",
+        )
+
     def test_disabled_casters_are_skipped_and_yaml_order_is_preserved(self):
         casters = resolve_enabled_casters(_base_cfg())
         self.assertEqual([caster.id for caster in casters], ["caster1", "caster2"])
