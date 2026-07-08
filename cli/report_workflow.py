@@ -437,17 +437,21 @@ class ShiftWorkflow:
     def _send_raw_csv_email(self, run: ShiftRun, result: CasterRunResult) -> bool:
         cfg = result.caster.cfg
         if not bool((cfg.get("email", {}) or {}).get("send_csv_attachment", True)):
+            reason = "email.send_csv_attachment is false"
             result.state["emailed_csv"] = False
-            result.state["csv_email_skip_reason"] = "email.send_csv_attachment is false"
+            result.state["csv_email_skip_reason"] = reason
             self._save_state(run, result.caster, result.state)
+            logger.info("Raw CSV email skipped | caster=%s | reason=%s", result.caster.id, reason)
             return False
         recipients = None
         if self.test_mode:
             recipients = self._test_recipients(cfg)
             if not recipients:
+                reason = self._test_mode_skip_reason()
                 result.state["emailed_csv"] = False
-                result.state["csv_email_skip_reason"] = self._test_mode_skip_reason()
+                result.state["csv_email_skip_reason"] = reason
                 self._save_state(run, result.caster, result.state)
+                logger.info("Raw CSV email skipped | caster=%s | reason=%s", result.caster.id, reason)
                 return False
 
         password_skip_reason = self._email_password_skip_reason(cfg)
@@ -455,6 +459,7 @@ class ShiftWorkflow:
             result.state["emailed_csv"] = False
             result.state["csv_email_skip_reason"] = password_skip_reason
             self._save_state(run, result.caster, result.state)
+            logger.info("Raw CSV email skipped | caster=%s | reason=%s", result.caster.id, password_skip_reason)
             return False
 
         subject = self._email_subject(
@@ -479,6 +484,13 @@ class ShiftWorkflow:
         result.state["email_test_mode"] = self.test_mode
         result.state["csv_email_recipients"] = recipients if self.test_mode else self._email_recipients(cfg)
         result.raw_email_sent = True
+        logger.info(
+            "Raw CSV email sent | caster=%s | test=%s | recipients=%s | path=%s",
+            result.caster.id,
+            self.test_mode,
+            len(result.state["csv_email_recipients"]),
+            result.csv_path,
+        )
         self._save_state(run, result.caster, result.state)
         return True
 
@@ -502,31 +514,30 @@ class ShiftWorkflow:
 
         recipients = self._test_recipients(cfg) if self.test_mode else self._verified_pipe_records_recipients(cfg)
         if not recipients:
+            reason = self._test_mode_skip_reason() if self.test_mode else "No verified_pipe_records_recipients configured"
             result.state["emailed_verified_pipes"] = False
-            result.state["verified_pipes_skip_reason"] = (
-                self._test_mode_skip_reason() if self.test_mode else "No verified_pipe_records_recipients configured"
-            )
+            result.state["verified_pipes_skip_reason"] = reason
             self._save_state(run, result.caster, result.state)
+            logger.info("Verified pipes email skipped | caster=%s | reason=%s", result.caster.id, reason)
             return
         password_skip_reason = self._email_password_skip_reason(cfg)
         if password_skip_reason:
             result.state["emailed_verified_pipes"] = False
             result.state["verified_pipes_skip_reason"] = password_skip_reason
             self._save_state(run, result.caster, result.state)
+            logger.info("Verified pipes email skipped | caster=%s | reason=%s", result.caster.id, password_skip_reason)
             return
 
         subject = self._email_subject(
-            f"Verified Pipe Records - {caster_label(result.caster, cfg)} - "
+            f"Verified Pipe Records - {result.caster.id} - "
             f"{run.shift_name} - {run.date_str} - Pipe Count {verified_summary['verified_count']}"
         )
         body = "\n".join([
             f"Date                  : {run.date_str}",
             f"Caster id             : {result.caster.id}",
-            f"Caster                : {caster_label(result.caster, cfg)}",
             f"Shift                 : {run.shift_name}",
             "",
             f"Pipe Count            : {verified_summary['verified_count']}",
-            f"Removed Pipe Count    : {verified_summary.get('removed_count', 'N/A')}",
         ])
         backoff_retry(
             lambda: self._mailer(result.caster).send_csv(
@@ -541,6 +552,15 @@ class ShiftWorkflow:
         result.state["email_test_mode"] = self.test_mode
         result.state["verified_pipe_records_recipients"] = recipients
         self._save_state(run, result.caster, result.state)
+        logger.info(
+            "Verified pipes email sent | caster=%s | test=%s | verified=%s | removed=%s | recipients=%s | path=%s",
+            result.caster.id,
+            self.test_mode,
+            verified_summary.get("verified_count"),
+            verified_summary.get("removed_count"),
+            len(recipients),
+            result.verified_path,
+        )
 
     def _send_diagnosis_report(self, run: ShiftRun, result: CasterRunResult):
         cfg = result.caster.cfg
@@ -557,17 +577,18 @@ class ShiftWorkflow:
 
         recipients = self._test_recipients(cfg) if self.test_mode else self._diagnosis_recipients(cfg)
         if not recipients:
+            reason = self._test_mode_skip_reason() if self.test_mode else "No email.diagnosis_recipients configured"
             result.state["emailed_diagnosis_xlsx"] = False
-            result.state["diagnosis_skip_reason"] = (
-                self._test_mode_skip_reason() if self.test_mode else "No email.diagnosis_recipients configured"
-            )
+            result.state["diagnosis_skip_reason"] = reason
             self._save_state(run, result.caster, result.state)
+            logger.info("Diagnosis email skipped | caster=%s | reason=%s", result.caster.id, reason)
             return
         password_skip_reason = self._email_password_skip_reason(cfg)
         if password_skip_reason:
             result.state["emailed_diagnosis_xlsx"] = False
             result.state["diagnosis_skip_reason"] = password_skip_reason
             self._save_state(run, result.caster, result.state)
+            logger.info("Diagnosis email skipped | caster=%s | reason=%s", result.caster.id, password_skip_reason)
             return
 
         min_gap_label, max_gap_label = self._diagnosis_gap_labels(diagnosis_summary)
@@ -603,6 +624,14 @@ class ShiftWorkflow:
         result.state["email_test_mode"] = self.test_mode
         result.state["diagnosis_recipients"] = recipients
         self._save_state(run, result.caster, result.state)
+        logger.info(
+            "Diagnosis email sent | caster=%s | test=%s | abnormal=%s | recipients=%s | path=%s",
+            result.caster.id,
+            self.test_mode,
+            diagnosis_summary.get("abnormal_count"),
+            len(recipients),
+            result.diagnosis_path,
+        )
 
     def load_selected_enabled_casters(self) -> list[CasterConfig]:
         return self.casters
@@ -670,6 +699,7 @@ class ShiftWorkflow:
                 state["emailed_verified_pipes"] = False
                 state["verified_pipes_skip_reason"] = "Raw CSV email was not sent"
                 self._save_state(run, caster, state)
+                logger.info("Verified pipes skipped | caster=%s | reason=%s", caster.id, state["verified_pipes_skip_reason"])
             else:
                 state["emailed_verified_pipes"] = False
                 state["verified_pipes_skip_reason"] = "Raw CSV export failed"

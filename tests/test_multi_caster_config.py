@@ -478,7 +478,7 @@ class WorkflowOrderingTest(TestCase):
                 pass
 
             def send_csv(self, subject, body, csv_path, recipients=None):
-                deliveries.append((subject, tuple(recipients or [])))
+                deliveries.append((subject, body, tuple(recipients or [])))
 
         with (
             TemporaryDirectory() as tmp,
@@ -490,8 +490,13 @@ class WorkflowOrderingTest(TestCase):
             wf.state_dir = Path(tmp)
             wf.run_verified_only(ShiftRun("02-07-2026", "Shift_A"))
 
-        self.assertEqual([recipients for _, recipients in deliveries], [("test@example.com",)] * 2)
-        self.assertTrue(all(subject.startswith("[TEST] ") for subject, _ in deliveries))
+        self.assertEqual([recipients for _, _, recipients in deliveries], [("test@example.com",)] * 2)
+        self.assertTrue(all(subject.startswith("[TEST] ") for subject, _, _ in deliveries))
+        verified_subject, verified_body = deliveries[1][0], deliveries[1][1]
+        self.assertIn("Verified Pipe Records - caster2", verified_subject)
+        self.assertIn("Caster id             : caster2", verified_body)
+        self.assertNotIn("Caster                :", verified_body)
+        self.assertNotIn("Removed Pipe Count", verified_body)
 
     def test_verified_only_runs_raw_and_verified_without_raw_email_success(self):
         events = []
@@ -593,4 +598,4 @@ class WorkflowOrderingTest(TestCase):
 
         self.assertTrue(wf.results["caster1"].errors)
         self.assertIn("Pipe Report CSV - Caster 2", events[0])
-        self.assertIn("Verified Pipe Records - Caster 2", events[1])
+        self.assertIn("Verified Pipe Records - caster2", events[1])
