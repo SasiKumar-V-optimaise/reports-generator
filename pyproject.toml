@@ -1,0 +1,19 @@
+[project]
+name = "reports-generator"
+version = "0.1.0"
+description = "Shift report generation tools for Electro Steel."
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=2.0",
+    "opencv-python>=4.10.0.84",
+    "pandas>=2.2",
+    "pyyaml>=6.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+]
+
+[tool.uv]
+package = false
