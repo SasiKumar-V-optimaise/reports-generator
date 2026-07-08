@@ -116,71 +116,55 @@ casters:
     - id: caster1
       number: 1
       enabled: true
-      var_dir: ../electrosteel_pipe_detection_prod/var/caster1
-      database:
-        path: ../electrosteel_pipe_detection_prod/var/pipes.db
+      var_dir: ../electrosteel_pipe_detection_prod/var/caster_1
       rois:
         path: ../electrosteel_pipe_detection_prod/config/caster1/rois.yaml
 
     - id: caster2
       number: 2
       enabled: true
-      var_dir: ../electrosteel_pipe_detection_prod/var/caster2
-      database:
-        path: ../electrosteel_pipe_detection_prod/var/pipes.db
+      var_dir: ../electrosteel_pipe_detection_prod/var/caster_2
       rois:
         path: ../electrosteel_pipe_detection_prod/config/caster2/rois.yaml
 
     - id: caster3
       number: 3
       enabled: false
-      var_dir: ../electrosteel_pipe_detection_prod/var/caster3
-      database:
-        path: ../electrosteel_pipe_detection_prod/var/pipes.db
+      var_dir: ../electrosteel_pipe_detection_prod/var/caster_3
       rois:
         path: ../electrosteel_pipe_detection_prod/config/caster3/rois.yaml
 
     - id: caster4
       number: 4
       enabled: false
-      var_dir: ../electrosteel_pipe_detection_prod/var/caster4
-      database:
-        path: ../electrosteel_pipe_detection_prod/var/pipes.db
+      var_dir: ../electrosteel_pipe_detection_prod/var/caster_4
       rois:
         path: ../electrosteel_pipe_detection_prod/config/caster4/rois.yaml
 
     - id: caster5
       number: 5
       enabled: false
-      var_dir: ../electrosteel_pipe_detection_prod/var/caster5
-      database:
-        path: ../electrosteel_pipe_detection_prod/var/pipes.db
+      var_dir: ../electrosteel_pipe_detection_prod/var/caster_5
       rois:
         path: ../electrosteel_pipe_detection_prod/config/caster5/rois.yaml
 
     - id: caster6
       number: 6
       enabled: false
-      var_dir: ../electrosteel_pipe_detection_prod/var/caster6
-      database:
-        path: ../electrosteel_pipe_detection_prod/var/pipes.db
+      var_dir: ../electrosteel_pipe_detection_prod/var/caster_6
       rois:
         path: ../electrosteel_pipe_detection_prod/config/caster6/rois.yaml
 
     - id: caster7
       number: 7
       enabled: false
-      var_dir: ../electrosteel_pipe_detection_prod/var/caster7
-      database:
-        path: ../electrosteel_pipe_detection_prod/var/pipes.db
+      var_dir: ../electrosteel_pipe_detection_prod/var/caster_7
       rois:
         path: ../electrosteel_pipe_detection_prod/config/caster7/rois.yaml
 
     - id: caster8
       number: 8
       enabled: false
-      var_dir: ../electrosteel_pipe_detection_prod/var/caster8
-      database:
-        path: ../electrosteel_pipe_detection_prod/var/pipes.db
+      var_dir: ../electrosteel_pipe_detection_prod/var/caster_8
       rois:
         path: ../electrosteel_pipe_detection_prod/config/caster8/rois.yaml
