@@ -562,7 +562,25 @@ class ShiftWorkflow:
             result.verified_path,
         )
 
-    def _send_diagnosis_report(self, run: ShiftRun, result: CasterRunResult):
+    def _missing_loadcell_video_lines(self, result: CasterRunResult) -> list[str]:
+        overlay_link = result.missing_overlay_link or result.state.get("missing_loadcell_overlay_video_drive_link")
+        normal_link = result.missing_normal_link or result.state.get("missing_loadcell_normal_video_drive_link")
+        overlay_skip = result.state.get("missing_loadcell_overlay_video_skip_reason")
+        normal_skip = result.state.get("missing_loadcell_normal_video_skip_reason")
+        has_video_state = any((overlay_link, normal_link, overlay_skip, normal_skip))
+        if not has_video_state:
+            return []
+
+        overlay_text = overlay_link or (f"N/A ({overlay_skip})" if overlay_skip else "N/A")
+        normal_text = normal_link or (f"N/A ({normal_skip})" if normal_skip else "N/A")
+        return [
+            "",
+            "Missing Loadcell Videos",
+            f"Overlay Video Link        : {overlay_text}",
+            f"Normal Video Link         : {normal_text}",
+        ]
+
+    def _export_diagnosis_report(self, run: ShiftRun, result: CasterRunResult):
         cfg = result.caster.cfg
         diagnosis_exporter = PipeExporter(cfg=cfg, caster=result.caster)
         diagnosis_path_obj, diagnosis_summary = backoff_retry(
@@ -574,6 +592,18 @@ class ShiftWorkflow:
         result.state["diagnosis_xlsx_path"] = result.diagnosis_path
         result.state["diagnosis_summary"] = diagnosis_summary
         self._save_state(run, result.caster, result.state)
+
+    def _send_diagnosis_email(self, run: ShiftRun, result: CasterRunResult):
+        cfg = result.caster.cfg
+        diagnosis_summary = result.diagnosis_summary or result.state.get("diagnosis_summary")
+        diagnosis_path = result.diagnosis_path or result.state.get("diagnosis_xlsx_path")
+        if not diagnosis_summary or not diagnosis_path:
+            reason = "Diagnosis XLSX unavailable"
+            result.state["emailed_diagnosis_xlsx"] = False
+            result.state["diagnosis_skip_reason"] = reason
+            self._save_state(run, result.caster, result.state)
+            logger.info("Diagnosis email skipped | caster=%s | reason=%s", result.caster.id, reason)
+            return
 
         recipients = self._test_recipients(cfg) if self.test_mode else self._diagnosis_recipients(cfg)
         if not recipients:
@@ -595,7 +625,7 @@ class ShiftWorkflow:
         subject = self._email_subject(
             f"Pipe Diagnosis Report - {caster_label(result.caster, cfg)} - {run.shift_name} - {run.date_str}"
         )
-        body = "\n".join([
+        body_lines = [
             "Pipe Diagnosis Report",
             "",
             f"Date                       : {run.date_str}",
@@ -608,14 +638,15 @@ class ShiftWorkflow:
             f"T-Origin Gap Above {max_gap_label}: {diagnosis_summary['t_origin_gap_too_slow_count']}",
             f"T-Origin Gap Below {min_gap_label}: {diagnosis_summary['t_origin_gap_too_fast_count']}",
             f"Loadcell Missing Rows      : {diagnosis_summary['loadcell_missing_count']}",
+            *self._missing_loadcell_video_lines(result),
             "",
             "Diagnosis Excel file attached. Abnormal rows are highlighted red.",
-        ])
+        ]
         backoff_retry(
             lambda: self._mailer(result.caster).send_csv(
                 subject,
-                body,
-                result.diagnosis_path,
+                "\n".join(body_lines),
+                diagnosis_path,
                 recipients=recipients,
             ),
             what=f"{result.caster.id} diagnosis email",
@@ -630,8 +661,12 @@ class ShiftWorkflow:
             self.test_mode,
             diagnosis_summary.get("abnormal_count"),
             len(recipients),
-            result.diagnosis_path,
+            diagnosis_path,
         )
+
+    def _send_diagnosis_report(self, run: ShiftRun, result: CasterRunResult):
+        self._export_diagnosis_report(run, result)
+        self._send_diagnosis_email(run, result)
 
     def load_selected_enabled_casters(self) -> list[CasterConfig]:
         return self.casters
@@ -732,7 +767,7 @@ class ShiftWorkflow:
                 self._record_error(run, result, "Drive upload CSV failed")
                 logger.exception("Drive upload CSV failed | caster=%s", caster.id)
 
-    def phase_diagnosis(self, casters: list[CasterConfig], run: ShiftRun):
+    def phase_diagnosis(self, casters: list[CasterConfig], run: ShiftRun, *, send_email: bool = True):
         for caster in casters:
             result = self.results.setdefault(caster.id, CasterRunResult(caster=caster))
             result.state.setdefault("date", run.date_str)
@@ -741,14 +776,19 @@ class ShiftWorkflow:
             result.state["diagnosis_started_at"] = datetime.now().isoformat(timespec="seconds")
             self._save_state(run, caster, result.state)
             try:
-                self._send_diagnosis_report(run, result)
+                self._export_diagnosis_report(run, result)
+                if send_email:
+                    self._send_diagnosis_email(run, result)
             except Exception:
-                self._record_error(run, result, "Diagnosis XLSX email failed")
+                label = "Diagnosis XLSX email failed" if send_email else "Diagnosis XLSX export failed"
+                self._record_error(run, result, label)
                 logger.exception("Diagnosis failed | caster=%s", caster.id)
-            result.state["diagnosis_finished_at"] = datetime.now().isoformat(timespec="seconds")
+            result.state["diagnosis_export_finished_at"] = datetime.now().isoformat(timespec="seconds")
+            if send_email:
+                result.state["diagnosis_finished_at"] = result.state["diagnosis_export_finished_at"]
             self._save_state(run, caster, result.state)
 
-    def phase_videos(self, casters: list[CasterConfig], run: ShiftRun):
+    def phase_missing_loadcell_videos(self, casters: list[CasterConfig], run: ShiftRun):
         for caster in casters:
             result = self.results.setdefault(caster.id, CasterRunResult(caster=caster))
             try:
@@ -759,6 +799,20 @@ class ShiftWorkflow:
                 self._save_state(run, caster, result.state)
                 logger.exception("Missing-loadcell video failed | caster=%s", caster.id)
 
+    def phase_diagnosis_emails(self, casters: list[CasterConfig], run: ShiftRun):
+        for caster in casters:
+            result = self.results.setdefault(caster.id, CasterRunResult(caster=caster))
+            try:
+                self._send_diagnosis_email(run, result)
+            except Exception:
+                self._record_error(run, result, "Diagnosis XLSX email failed")
+                logger.exception("Diagnosis email failed | caster=%s", caster.id)
+            result.state["diagnosis_finished_at"] = datetime.now().isoformat(timespec="seconds")
+            self._save_state(run, caster, result.state)
+
+    def phase_normal_shift_videos(self, casters: list[CasterConfig], run: ShiftRun):
+        for caster in casters:
+            result = self.results.setdefault(caster.id, CasterRunResult(caster=caster))
             try:
                 if (caster.cfg.get("video", {}) or {}).get("enabled", True) is False:
                     result.state["normal_shift_video_skipped"] = True
@@ -785,6 +839,10 @@ class ShiftWorkflow:
                 result.state["normal_shift_video_error"] = traceback.format_exc()
                 self._save_state(run, caster, result.state)
                 logger.exception("Normal shift video failed | caster=%s", caster.id)
+
+    def phase_videos(self, casters: list[CasterConfig], run: ShiftRun):
+        self.phase_missing_loadcell_videos(casters, run)
+        self.phase_normal_shift_videos(casters, run)
 
     def _result_summary_lines(self, result: CasterRunResult) -> list[str]:
         verified_summary = result.verified_summary or result.state.get("verified_pipes_summary") or {}
@@ -892,6 +950,13 @@ class ShiftWorkflow:
             result.state["finished_at"] = datetime.now().isoformat(timespec="seconds")
             self._save_state(run, caster, result.state)
 
+    def finish_caster_states(self, casters: list[CasterConfig], run: ShiftRun):
+        for caster in casters:
+            result = self.results.setdefault(caster.id, CasterRunResult(caster=caster))
+            result.state["status"] = "partial_failure" if result.errors else "success"
+            result.state["finished_at"] = datetime.now().isoformat(timespec="seconds")
+            self._save_state(run, caster, result.state)
+
     def run_verified_only(self, run: ShiftRun):
         casters = self.load_selected_enabled_casters()
         logger.info("Verified-only workflow start | date=%s | shift=%s | casters=%s | test=%s", run.date_str, run.shift_name, [c.id for c in casters], self.test_mode)
@@ -919,9 +984,11 @@ class ShiftWorkflow:
         logger.info("Workflow start | date=%s | shift=%s | casters=%s | test=%s", run.date_str, run.shift_name, [c.id for c in casters], self.test_mode)
         self.phase_raw_and_verified(casters, run)
         self.phase_csv_uploads(casters, run)
-        self.phase_diagnosis(casters, run)
-        self.phase_videos(casters, run)
-        self.send_final_multi_caster_summary(casters, run)
+        self.phase_diagnosis(casters, run, send_email=False)
+        self.phase_missing_loadcell_videos(casters, run)
+        self.phase_diagnosis_emails(casters, run)
+        self.phase_normal_shift_videos(casters, run)
+        self.finish_caster_states(casters, run)
         logger.info("Workflow finished | date=%s | shift=%s", run.date_str, run.shift_name)
 
     def validate_config(self) -> str:

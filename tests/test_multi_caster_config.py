@@ -14,7 +14,7 @@ from reports.gates.gate2_closed_position_report import Gate2ClosedPositionReport
 from reports.pipes import gate_cycles_exporter
 from reports.pipes.pipe_exporter import PipeExporter
 from reports.pipes.verified_pipes import VerifiedPipeExporter
-from reports.video.video_generator import ShiftVideoGenerator
+from reports.video.video_generator import ShiftVideoGenerator, _normalize_shift_arg
 
 
 def _base_cfg():
@@ -236,6 +236,15 @@ class MultiCasterConfigTest(TestCase):
 
         self.assertEqual(pipe_count, 1)
         self.assertEqual(exported["pipe_checkpoint"].tolist(), [0])
+
+    def test_video_generator_cli_shift_normalization_accepts_flag_style_values(self):
+        self.assertEqual(_normalize_shift_arg("C"), "C")
+        self.assertEqual(_normalize_shift_arg("shift_c"), "C")
+        self.assertEqual(_normalize_shift_arg("Shift_C"), "C")
+
+        with self.assertRaises(ValueError):
+            _normalize_shift_arg("shift_d")
+
     def test_video_generator_uses_caster_specific_history_root(self):
         caster = resolve_enabled_casters(_base_cfg(), ["caster2"])[0]
         generator = ShiftVideoGenerator("02-07-2026", "A", cfg=caster.cfg, caster=caster)
@@ -304,8 +313,9 @@ class WorkflowOrderingTest(TestCase):
         self.assertFalse(wf.test_mode)
         self.assertEqual(wf._email_subject("Pipe Report CSV - Caster 2"), "Pipe Report CSV - Caster 2")
 
-    def test_workflow_orders_raw_verified_then_diagnosis_then_videos(self):
+    def test_workflow_orders_raw_verified_diagnosis_missing_links_then_normal_videos(self):
         events = []
+        diagnosis_bodies = {}
 
         class FakePipeExporter:
             def __init__(self, cfg=None, caster=None):
@@ -315,13 +325,14 @@ class WorkflowOrderingTest(TestCase):
                 return Path(f"{self.caster.id}.csv"), 10
 
             def export_diagnosis(self, date_str, shift):
+                events.append(f"{self.caster.id}_diagnosis_export")
                 return Path(f"{self.caster.id}.xlsx"), {
                     "pipe_count": 10,
                     "abnormal_count": 0,
                     "t_origin_gap_abnormal_count": 0,
                     "t_origin_gap_too_slow_count": 0,
                     "t_origin_gap_too_fast_count": 0,
-                    "loadcell_missing_count": 0,
+                    "loadcell_missing_count": 1,
                 }
 
         class FakeVerifiedExporter:
@@ -332,7 +343,9 @@ class WorkflowOrderingTest(TestCase):
                 return Path(f"{self.caster.id}_verified.csv"), {
                     "verified_count": 9,
                     "removed_count": 1,
-                    "loadcell_missing_records": [],
+                    "loadcell_missing_records": [
+                        {"pipe_uid": f"{self.caster.id}-p1", "origin_time": "2026-07-02 06:10:00"}
+                    ],
                 }
 
         class FakeMailer:
@@ -345,7 +358,9 @@ class WorkflowOrderingTest(TestCase):
                 elif subject.startswith("Verified Pipe Records"):
                     events.append(f"{subject.split(' - ')[1].lower().replace(' ', '')}_verified_email")
                 elif subject.startswith("Pipe Diagnosis Report"):
-                    events.append(f"{subject.split(' - ')[1].lower().replace(' ', '')}_diagnosis_email")
+                    caster_token = subject.split(" - ")[1].lower().replace(" ", "")
+                    events.append(f"{caster_token}_diagnosis_email")
+                    diagnosis_bodies[caster_token] = body
 
             def send(self, subject, body, attachments=None):
                 events.append("final_summary")
@@ -358,7 +373,20 @@ class WorkflowOrderingTest(TestCase):
                 return f"https://drive/{self.caster.id}/csv"
 
             def upload_video(self, path):
-                return f"https://drive/{self.caster.id}/video"
+                name = Path(path).name
+                kind = "overlay" if "overlay" in name else "normal"
+                events.append(f"{self.caster.id}_missing_{kind}_upload")
+                return f"https://drive/{self.caster.id}/{name}"
+
+        class FakeOverlayGenerator:
+            def __init__(self, date_str, shift, windows=None, output_name=None, normal_output_name=None, cfg=None, caster=None):
+                self.caster = caster
+                self.output_name = output_name or f"{caster.id}_overlay.mp4"
+                self.normal_output_path = Path(normal_output_name or f"{caster.id}_normal.mp4")
+
+            def generate(self):
+                events.append(f"{self.caster.id}_missing_video_generate")
+                return self.output_name
 
         class FakeVideoGenerator:
             def __init__(self, date_str, shift, cfg=None, caster=None):
@@ -374,6 +402,7 @@ class WorkflowOrderingTest(TestCase):
             patch.object(report_workflow, "VerifiedPipeExporter", FakeVerifiedExporter),
             patch.object(report_workflow, "EmailSender", FakeMailer),
             patch.object(report_workflow, "GDriveUploader", FakeUploader),
+            patch.object(report_workflow, "ShiftVideoOverlayGenerator", FakeOverlayGenerator),
             patch.object(report_workflow, "ShiftVideoGenerator", FakeVideoGenerator),
         ):
             wf = self._workflow(tmp)
@@ -386,13 +415,24 @@ class WorkflowOrderingTest(TestCase):
                 "caster1_verified_email",
                 "caster2_raw_email",
                 "caster2_verified_email",
+                "caster1_diagnosis_export",
+                "caster2_diagnosis_export",
+                "caster1_missing_video_generate",
+                "caster1_missing_overlay_upload",
+                "caster1_missing_normal_upload",
+                "caster2_missing_video_generate",
+                "caster2_missing_overlay_upload",
+                "caster2_missing_normal_upload",
                 "caster1_diagnosis_email",
                 "caster2_diagnosis_email",
                 "caster1_video",
                 "caster2_video",
-                "final_summary",
             ],
         )
+        self.assertIn("Missing Loadcell Videos", diagnosis_bodies["caster1"])
+        self.assertIn("Overlay Video Link        : https://drive/caster1/", diagnosis_bodies["caster1"])
+        self.assertIn("Normal Video Link         : https://drive/caster1/", diagnosis_bodies["caster1"])
+        self.assertNotIn("final_summary", events)
 
     def test_test_mode_routes_full_workflow_mail_to_test_recipients(self):
         deliveries = []
@@ -463,7 +503,7 @@ class WorkflowOrderingTest(TestCase):
             wf = self._workflow(tmp, test_mode=True)
             wf.run(ShiftRun("02-07-2026", "Shift_A"))
 
-        self.assertEqual([recipients for _, recipients in deliveries], [("test@example.com",)] * 7)
+        self.assertEqual([recipients for _, recipients in deliveries], [("test@example.com",)] * 6)
         self.assertTrue(all(subject.startswith("[TEST] ") for subject, _ in deliveries))
 
     def test_verified_only_test_mode_routes_csv_mail_to_test_recipients(self):

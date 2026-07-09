@@ -1,6 +1,5 @@
 import cv2
 import glob
-import yaml
 import time
 import logging
 from pathlib import Path
@@ -176,15 +175,24 @@ class ShiftVideoGenerator:
             return -1
 
 
+def _normalize_shift_arg(value: str | None) -> str:
+    if not value:
+        raise ValueError("Shift is required. Use --shift A/B/C or positional shift_a/shift_b/shift_c")
+    text = str(value).strip()
+    if text.lower().startswith("shift_"):
+        text = text.split("_", 1)[1]
+    text = text.upper()
+    if text not in {"A", "B", "C"}:
+        raise ValueError("Invalid shift. Use A, B, C, shift_a, shift_b, or shift_c")
+    return text
+
+
 # ---------------- CLI ----------------
 if __name__ == "__main__":
     import argparse
     import logging
-    import yaml
 
-    root = Path(__file__).resolve().parents[2]
-    with open(root / "config/runtime.yaml") as f:
-        cfg = yaml.safe_load(f)
+    cfg = load_runtime_config()
 
     level_name = (cfg.get("logging", {}) or {}).get("level", "INFO")
     logging.basicConfig(
@@ -192,11 +200,25 @@ if __name__ == "__main__":
         format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
     )
 
-    parser = argparse.ArgumentParser(description="Generate shift video")
-    parser.add_argument("--date", required=True)
-    parser.add_argument("shift", choices=["shift_a", "shift_b", "shift_c"])
+    parser = argparse.ArgumentParser(description="Generate normal full-shift video")
+    parser.add_argument("--date", required=True, help="DD-MM-YYYY")
+    parser.add_argument("shift", nargs="?", help="shift_a/shift_b/shift_c, kept for backward compatibility")
+    parser.add_argument("--shift", dest="shift_opt", help="A/B/C or Shift_A/Shift_B/Shift_C")
+    parser.add_argument("--caster", help="Single caster id, for example caster1")
+    parser.add_argument("--all-casters", action="store_true", help="Generate for every enabled caster")
 
     args = parser.parse_args()
-    shift_letter = args.shift.split("_")[1].upper()
+    if args.shift and args.shift_opt:
+        parser.error("Use either positional shift or --shift, not both")
+    if args.caster and args.all_casters:
+        parser.error("Use either --caster or --all-casters, not both")
 
-    ShiftVideoGenerator(args.date, shift_letter).generate()
+    try:
+        shift_letter = _normalize_shift_arg(args.shift_opt or args.shift)
+    except ValueError as exc:
+        parser.error(str(exc))
+
+    selected_ids = None if args.all_casters else ([args.caster] if args.caster else None)
+    casters = resolve_enabled_casters(cfg, selected_ids)
+    for caster in casters:
+        ShiftVideoGenerator(args.date, shift_letter, cfg=caster.cfg, caster=caster).generate()
