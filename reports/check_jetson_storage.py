@@ -138,8 +138,7 @@ def main() -> int:
         return 0
 
     recipients = recipients_from_config(cfg, recipient_mode)
-    subject_prefix = "[TEST] " if recipient_mode == "test" else ""
-    subject = f"{subject_prefix}Jetson storage alert: {usage.filesystem} is {usage.use_percent}% full"
+    subject = f"Jetson storage alert: {usage.filesystem} is {usage.use_percent}% full"
     body = build_alert_body(usage, threshold, device)
 
     EmailSender(cfg=cfg).send_text(subject, body, recipients=recipients)
