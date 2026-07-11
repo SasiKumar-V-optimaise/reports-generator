@@ -69,6 +69,30 @@ def recipients_from_config(cfg: dict, mode: str) -> list[str]:
     return recipients
 
 
+def storage_alert_settings(cfg: dict, args: argparse.Namespace) -> tuple[str, int, str]:
+    alert_cfg = cfg.get("jetson_storage_alert", {}) or {}
+    device = args.device or alert_cfg.get("device")
+    threshold = args.threshold if args.threshold is not None else alert_cfg.get("threshold_percent")
+    recipient_mode = args.recipient_mode or alert_cfg.get("recipient_mode", "test")
+
+    if not device:
+        raise RuntimeError("No jetson_storage_alert.device configured in config/runtime.yaml")
+    if threshold is None:
+        raise RuntimeError("No jetson_storage_alert.threshold_percent configured in config/runtime.yaml")
+
+    try:
+        threshold = int(threshold)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("jetson_storage_alert.threshold_percent must be an integer") from exc
+
+    if threshold < 1:
+        raise RuntimeError("jetson_storage_alert.threshold_percent must be greater than 0")
+    if recipient_mode not in {"test", "production"}:
+        raise RuntimeError("jetson_storage_alert.recipient_mode must be 'test' or 'production'")
+
+    return str(device), threshold, str(recipient_mode)
+
+
 def build_alert_body(usage: DiskUsage, threshold: int, device: str) -> str:
     disk_status = subprocess.check_output(["df", "-hP", usage.mountpoint], text=True).strip()
     return "\n".join(
@@ -90,35 +114,33 @@ def build_alert_body(usage: DiskUsage, threshold: int, device: str) -> str:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Send an email when Jetson storage usage is above threshold.")
-    parser.add_argument("--device", default="/dev/nvme0n1p1")
-    parser.add_argument("--threshold", type=int, default=90)
+    parser.add_argument("--device", help="Override jetson_storage_alert.device from runtime.yaml")
+    parser.add_argument("--threshold", type=int, help="Override jetson_storage_alert.threshold_percent from runtime.yaml")
     parser.add_argument(
         "--recipient-mode",
         choices=["test", "production"],
-        default="test",
-        help="test uses email.test_recipients; production uses email.recipients",
+        help="Override jetson_storage_alert.recipient_mode from runtime.yaml",
     )
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
-    if args.threshold < 1:
-        raise RuntimeError("--threshold must be greater than 0")
+    cfg = load_runtime_config()
+    device, threshold, recipient_mode = storage_alert_settings(cfg, args)
 
-    usage = get_device_usage(args.device)
+    usage = get_device_usage(device)
     if usage is None:
-        raise RuntimeError(f"Storage device {args.device} was not found in df output")
+        raise RuntimeError(f"Storage device {device} was not found in df output")
 
-    if usage.use_percent <= args.threshold:
-        print(f"{usage.filesystem} usage is {usage.use_percent}%, below threshold {args.threshold}%.")
+    if usage.use_percent <= threshold:
+        print(f"{usage.filesystem} usage is {usage.use_percent}%, below threshold {threshold}%.")
         return 0
 
-    cfg = load_runtime_config()
-    recipients = recipients_from_config(cfg, args.recipient_mode)
-    subject_prefix = "[TEST] " if args.recipient_mode == "test" else ""
+    recipients = recipients_from_config(cfg, recipient_mode)
+    subject_prefix = "[TEST] " if recipient_mode == "test" else ""
     subject = f"{subject_prefix}Jetson storage alert: {usage.filesystem} is {usage.use_percent}% full"
-    body = build_alert_body(usage, args.threshold, args.device)
+    body = build_alert_body(usage, threshold, device)
 
     EmailSender(cfg=cfg).send_text(subject, body, recipients=recipients)
     print(f"Email sent to {', '.join(recipients)} because {usage.filesystem} is {usage.use_percent}% full.")
