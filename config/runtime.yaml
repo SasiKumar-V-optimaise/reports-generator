@@ -48,15 +48,14 @@ missing_loadcell_video:
   clip_duration_seconds: 300
   delete_after_upload: true
 
-# Storage alert configuration for Jetson device. The alert will be triggered when the storage usage exceeds the specified threshold percentage.
 jetson_storage_alert:
   device: /dev/nvme0n1p1
   threshold_percent: 90
   recipient_mode: test
 
-
-
-
+video_retention:
+  keep_days: 5
+  include_overlay_videos: true
 verified_pipe_records_recipients:
   - punithsai2001@gmail.com
   - saikiran@electrosteel.com
