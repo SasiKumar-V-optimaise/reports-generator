@@ -32,25 +32,21 @@ def cleanup_shift_sources(
     date_str: str,
     shift: str,
     *,
-    image_paths: list[str | Path] | None = None,
-    text_paths: list[str | Path] | None = None,
     prune_empty_date_dirs: bool = True,
+    caster_name: str | None = None,
 ) -> dict:
     """
-    Delete the source image/text files or folders used by a completed shift video.
+    Delete completed shift source image/text folders after video success.
 
-    When exact paths are provided, only those files are removed. Empty shift/date
-    folders are pruned afterward, which keeps late re-runs from deleting newer
-    files that may share the same Shift_C folder on the next date.
+    This removes whole `Shift_X_img` and `Shift_X_text` folders instead of
+    unlinking every image/text file one by one. That keeps cleanup fast and
+    keeps production logs compact on the Jetson.
     """
     source_dirs = shift_source_dirs(history_root, date_str, shift)
-    source_files = _source_files(image_paths, text_paths)
-    date_dirs = {path.parent for path in source_dirs}
+    date_dirs = sorted({path.parent for path in source_dirs})
+    caster_text = caster_name or "unknown caster"
     summary = {
         "source_dirs": [str(path) for path in source_dirs],
-        "deleted_files": [],
-        "missing_files": [],
-        "failed_files": {},
         "deleted_dirs": [],
         "missing_dirs": [],
         "failed_dirs": {},
@@ -58,92 +54,50 @@ def cleanup_shift_sources(
         "kept_date_dirs": [],
     }
 
-    if source_files:
-        date_dirs.update(path.parent.parent for path in source_files)
-        for path in sorted(source_files):
-            if not path.exists():
-                summary["missing_files"].append(str(path))
-                continue
-            if not path.is_file():
-                summary["failed_files"][str(path)] = "Path exists but is not a file"
-                logger.warning("Shift source cleanup skipped non-file path: %s", path)
-                continue
-
-            try:
-                path.unlink()
-            except Exception as exc:
-                summary["failed_files"][str(path)] = str(exc)
-                logger.warning("Failed to delete shift source file | path=%s | error=%s", path, exc)
-                continue
-
-            summary["deleted_files"].append(str(path))
-            logger.info("Deleted shift source file: %s", path)
-
-        _remove_empty_source_dirs(source_dirs, summary)
-        _remove_empty_date_dirs(sorted(date_dirs), summary, prune_empty_date_dirs)
-        return summary
+    logger.info(
+        "Shift source folder cleanup started | caster=%s | date=%s | shift=%s | folders=%s",
+        caster_text,
+        date_str,
+        _shift_letter(shift),
+        len(source_dirs),
+    )
 
     for directory in source_dirs:
         if not directory.exists():
             summary["missing_dirs"].append(str(directory))
+            logger.info("Shift source folder missing; skipping | caster=%s | path=%s", caster_text, directory)
             continue
         if not directory.is_dir():
             summary["failed_dirs"][str(directory)] = "Path exists but is not a directory"
-            logger.warning("Shift source cleanup skipped non-directory path: %s", directory)
+            logger.warning("Shift source cleanup skipped non-directory path | caster=%s | path=%s", caster_text, directory)
             continue
 
         try:
             shutil.rmtree(directory)
         except Exception as exc:
             summary["failed_dirs"][str(directory)] = str(exc)
-            logger.warning("Failed to delete shift source folder | path=%s | error=%s", directory, exc)
+            logger.warning("Failed to delete shift source folder | caster=%s | path=%s | error=%s", caster_text, directory, exc)
             continue
 
         summary["deleted_dirs"].append(str(directory))
-        logger.info("Deleted shift source folder: %s", directory)
+        logger.info("Deleted shift source folder | caster=%s | path=%s", caster_text, directory)
 
-    _remove_empty_date_dirs(sorted(date_dirs), summary, prune_empty_date_dirs)
+    _remove_empty_date_dirs(date_dirs, summary, prune_empty_date_dirs, caster_text)
+
+    logger.info(
+        "Shift source folder cleanup finished | caster=%s | date=%s | shift=%s | deleted_folders=%s | missing_folders=%s | removed_date_folders=%s | failed_folders=%s",
+        caster_text,
+        date_str,
+        _shift_letter(shift),
+        len(summary["deleted_dirs"]),
+        len(summary["missing_dirs"]),
+        len(summary["removed_empty_date_dirs"]),
+        len(summary["failed_dirs"]),
+    )
     return summary
 
 
-def text_path_for_image(image_path: Path | str) -> Path:
-    image_path = Path(image_path)
-    return image_path.parent.parent / image_path.parent.name.replace("_img", "_text") / f"{image_path.stem}.txt"
-
-
-def _source_files(
-    image_paths: list[str | Path] | None,
-    text_paths: list[str | Path] | None,
-) -> set[Path]:
-    files = {Path(path) for path in image_paths or []}
-    files.update(text_path_for_image(path) for path in image_paths or [])
-    files.update(Path(path) for path in text_paths or [])
-    return files
-
-
-def _remove_empty_source_dirs(source_dirs: list[Path], summary: dict):
-    for directory in source_dirs:
-        if not directory.exists():
-            summary["missing_dirs"].append(str(directory))
-            continue
-        if not directory.is_dir():
-            summary["failed_dirs"][str(directory)] = "Path exists but is not a directory"
-            logger.warning("Shift source cleanup skipped non-directory path: %s", directory)
-            continue
-        try:
-            if any(directory.iterdir()):
-                continue
-            directory.rmdir()
-        except Exception as exc:
-            summary["failed_dirs"][str(directory)] = str(exc)
-            logger.warning("Failed to remove empty shift source folder | path=%s | error=%s", directory, exc)
-            continue
-
-        summary["deleted_dirs"].append(str(directory))
-        logger.info("Removed empty shift source folder: %s", directory)
-
-
-def _remove_empty_date_dirs(date_dirs: list[Path], summary: dict, enabled: bool):
+def _remove_empty_date_dirs(date_dirs: list[Path], summary: dict, enabled: bool, caster_text: str):
     if not enabled:
         return
 
@@ -157,11 +111,11 @@ def _remove_empty_date_dirs(date_dirs: list[Path], summary: dict, enabled: bool)
             date_dir.rmdir()
         except Exception as exc:
             summary["failed_dirs"][str(date_dir)] = str(exc)
-            logger.warning("Failed to remove empty history date folder | path=%s | error=%s", date_dir, exc)
+            logger.warning("Failed to remove empty history date folder | caster=%s | path=%s | error=%s", caster_text, date_dir, exc)
             continue
 
         summary["removed_empty_date_dirs"].append(str(date_dir))
-        logger.info("Removed empty history date folder: %s", date_dir)
+        logger.info("Removed empty history date folder | caster=%s | path=%s", caster_text, date_dir)
 
 
 def _shift_letter(value: str) -> str:

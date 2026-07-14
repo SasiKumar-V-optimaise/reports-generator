@@ -820,6 +820,14 @@ class ShiftWorkflow:
                     result.state["normal_shift_video_skip_reason"] = "video.enabled is false"
                     self._save_state(run, caster, result.state)
                     continue
+                caster_text = caster_label(caster, caster.cfg)
+                logger.info(
+                    "%s video is generating | caster_id=%s | date=%s | shift=%s",
+                    caster_text,
+                    caster.id,
+                    run.date_str,
+                    run.shift_name,
+                )
                 video_gen = ShiftVideoGenerator(
                     run.date_str,
                     run.shift_name.split("_")[1],
@@ -830,6 +838,12 @@ class ShiftWorkflow:
                     lambda: video_gen.generate(),
                     what=f"{caster.id} normal shift video generation",
                 )
+                logger.info(
+                    "%s video generated successfully | caster_id=%s | path=%s",
+                    caster_text,
+                    caster.id,
+                    result.full_shift_video_path,
+                )
                 result.state["normal_shift_video_path"] = result.full_shift_video_path
                 result.state["normal_shift_video_uploaded"] = False
                 result.state["video_path"] = result.full_shift_video_path
@@ -838,16 +852,31 @@ class ShiftWorkflow:
                     history_root = getattr(video_gen, "image_root", None)
                     if history_root is None:
                         history_root = (self.root / caster.cfg["history"]["image_root"]).resolve()
+                    logger.info(
+                        "%s source folder cleanup starting after video success | caster_id=%s | date=%s | shift=%s",
+                        caster_text,
+                        caster.id,
+                        run.date_str,
+                        run.shift_name,
+                    )
                     cleanup_summary = cleanup_shift_sources(
                         history_root,
                         run.date_str,
                         run.shift_name,
-                        image_paths=getattr(video_gen, "source_image_paths", None),
+                        caster_name=caster_text,
                     )
                     result.state["normal_shift_source_cleanup"] = cleanup_summary
-                    if cleanup_summary.get("failed_files") or cleanup_summary.get("failed_dirs"):
-                        result.errors.append("Normal shift source cleanup failed for one or more paths")
+                    if cleanup_summary.get("failed_dirs"):
+                        result.errors.append("Normal shift source cleanup failed for one or more folders")
                         result.state["errors"] = result.errors
+                    logger.info(
+                        "%s source folder cleanup completed | caster_id=%s | deleted_folders=%s | removed_date_folders=%s | failed_folders=%s",
+                        caster_text,
+                        caster.id,
+                        len(cleanup_summary.get("deleted_dirs", [])),
+                        len(cleanup_summary.get("removed_empty_date_dirs", [])),
+                        len(cleanup_summary.get("failed_dirs", {})),
+                    )
                 except Exception:
                     result.state["normal_shift_source_cleanup_error"] = traceback.format_exc()
                     result.errors.append("Normal shift source cleanup failed:\n" + result.state["normal_shift_source_cleanup_error"])

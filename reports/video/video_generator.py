@@ -6,7 +6,7 @@ from pathlib import Path
 from datetime import datetime, timedelta
 
 from reports.common.config_loader import load_runtime_config
-from reports.common.caster_config import resolve_enabled_casters
+from reports.common.caster_config import caster_label, resolve_enabled_casters
 
 
 logger = logging.getLogger(__name__)
@@ -38,6 +38,7 @@ class ShiftVideoGenerator:
             cfg = caster.cfg
         self.caster = caster
         self.caster_file_token = getattr(caster, "file_token", None)
+        self.caster_log_label = caster_label(caster, cfg)
 
         self.video_cfg = cfg["video"]
         self.image_root = (self.root / cfg["history"]["image_root"]).resolve()
@@ -52,8 +53,8 @@ class ShiftVideoGenerator:
         self.output_path = self.output_dir / f"{date_str}{caster_part}_shift_{self.shift.lower()}.mp4"
 
         logger.info(
-            "VideoGenerator initialized | date=%s | shift=%s",
-            self.date_str, self.shift
+            "VideoGenerator initialized | caster=%s | date=%s | shift=%s",
+            self.caster_log_label, self.date_str, self.shift
         )
 
     # ---------------- GENERATE ----------------
@@ -68,8 +69,8 @@ class ShiftVideoGenerator:
         end_ts = self._timestamp_from_name(images[-1])
 
         logger.info(
-            "Generating video | shift=%s | images=%s | range=%s → %s",
-            self.shift, len(images), start_ts, end_ts
+            "Generating video | caster=%s | shift=%s | images=%s | range=%s → %s",
+            self.caster_log_label, self.shift, len(images), start_ts, end_ts
         )
 
         first = cv2.imread(images[0])
@@ -125,8 +126,8 @@ class ShiftVideoGenerator:
         total_time = int(time.time() - start_time)
 
         logger.info(
-            "Video created successfully | path=%s | duration=%ss",
-            self.output_path, total_time
+            "Video created successfully | caster=%s | path=%s | duration=%ss",
+            self.caster_log_label, self.output_path, total_time
         )
 
         return str(self.output_path)

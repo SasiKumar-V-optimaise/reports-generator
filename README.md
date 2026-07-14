@@ -62,17 +62,18 @@ For each enabled or selected caster, the workflow runs these phases in order.
 14. Deletes missing-loadcell videos after upload if configured.
 15. Sends the diagnosis email with the XLSX and missing-loadcell links.
 16. Generates the normal full-shift video locally.
-17. Only after successful full-shift video creation, deletes the source history image/text files used for that video.
-18. Removes empty `Shift_*_img`, `Shift_*_text`, and empty date folders.
+17. Only after successful full-shift video creation, deletes the source `Shift_*_img` and `Shift_*_text` folders for that shift.
+18. Removes empty date folders, such as the old date folder after `Shift_C` completes.
 19. Marks the caster state as `success` or `partial_failure`.
 
 Important cleanup behavior:
 
 - If full-shift video creation fails, history images and text files are not deleted.
 - If OpenCV writes zero readable frames, video creation is treated as failed.
-- Cleanup deletes the exact image files used by the video and matching `.txt` files.
+- Cleanup deletes whole shift source folders with `shutil.rmtree`, not image-by-image or text-file-by-text-file.
 - For `Shift_C`, cleanup may touch two date folders because the shift crosses midnight.
 - Date folders such as `history/2026_07_13` are removed only when they become empty.
+- Cleanup logs one message per folder plus a summary, so production logs stay compact.
 
 Example source folders:
 
@@ -285,7 +286,7 @@ uv run pytest
 
 - Keep cleanup logic separate from video generation. The workflow decides when
   cleanup is safe to run.
-- Do not delete history source files before `ShiftVideoGenerator.generate()`
+- Do not delete history source folders before `ShiftVideoGenerator.generate()`
   returns successfully.
 - Prefer caster-specific config through `resolve_enabled_casters`.
 - Use the state JSON files in `outputs/state` to debug what happened during a run.

@@ -13,35 +13,28 @@ def _touch(path: Path):
 
 
 class ShiftSourceCleanupTest(TestCase):
-    def test_c_shift_deletes_exact_image_text_files_and_prunes_empty_old_date_folder(self):
+    def test_c_shift_deletes_shift_folders_and_prunes_empty_old_date_folder(self):
         with TemporaryDirectory() as tmp:
             history = Path(tmp) / "history"
             old_img = history / "2026_07_13" / "Shift_C_img" / "frame_13.jpeg"
             old_text = history / "2026_07_13" / "Shift_C_text" / "frame_13.txt"
             next_img = history / "2026_07_14" / "Shift_C_img" / "frame_14.jpeg"
             next_text = history / "2026_07_14" / "Shift_C_text" / "frame_14.txt"
-            future_img = history / "2026_07_14" / "Shift_C_img" / "future_shift_frame.jpeg"
-            future_text = history / "2026_07_14" / "Shift_C_text" / "future_shift_frame.txt"
-            for path in (old_img, old_text, next_img, next_text, future_img, future_text):
+            keep_file = history / "2026_07_14" / "Shift_A_img" / "frame_a.jpeg"
+            for path in (old_img, old_text, next_img, next_text, keep_file):
                 _touch(path)
 
-            summary = cleanup_shift_sources(
-                history,
-                "13-07-2026",
-                "Shift_C",
-                image_paths=[old_img, next_img],
-            )
+            summary = cleanup_shift_sources(history, "13-07-2026", "Shift_C", caster_name="Caster 2")
 
-            self.assertFalse(old_img.exists())
-            self.assertFalse(old_text.exists())
-            self.assertFalse(next_img.exists())
-            self.assertFalse(next_text.exists())
+            self.assertFalse((history / "2026_07_13" / "Shift_C_img").exists())
+            self.assertFalse((history / "2026_07_13" / "Shift_C_text").exists())
             self.assertFalse((history / "2026_07_13").exists())
-            self.assertTrue(future_img.exists())
-            self.assertTrue(future_text.exists())
+            self.assertFalse((history / "2026_07_14" / "Shift_C_img").exists())
+            self.assertFalse((history / "2026_07_14" / "Shift_C_text").exists())
+            self.assertTrue(keep_file.exists())
             self.assertIn(str(history / "2026_07_13"), summary["removed_empty_date_dirs"])
             self.assertIn(str(history / "2026_07_14"), summary["kept_date_dirs"])
-            self.assertEqual(summary["failed_files"], {})
+            self.assertEqual(len(summary["deleted_dirs"]), 4)
             self.assertEqual(summary["failed_dirs"], {})
 
     def test_a_and_b_shifts_only_target_the_requested_date(self):

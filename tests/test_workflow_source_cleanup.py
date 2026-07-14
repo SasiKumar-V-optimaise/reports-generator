@@ -49,20 +49,20 @@ class WorkflowSourceCleanupTest(TestCase):
         class FakeVideoGenerator:
             def __init__(self, date_str, shift, cfg=None, caster=None):
                 self.image_root = Path("history-root")
-                self.source_image_paths = [Path("history-root/2026_07_13/Shift_C_img/frame.jpeg")]
 
             def generate(self):
                 return "caster1.mp4"
 
-        def fake_cleanup(history_root, date_str, shift, *, image_paths=None):
-            calls.append((history_root, date_str, shift, image_paths))
-            return {"deleted_files": ["history-root/2026_07_13/Shift_C_img/frame.jpeg"]}
+        def fake_cleanup(history_root, date_str, shift, *, caster_name=None):
+            calls.append((history_root, date_str, shift, caster_name))
+            return {"deleted_dirs": ["history-root/2026_07_13/Shift_C_img"], "failed_dirs": {}}
 
         with (
             TemporaryDirectory() as tmp,
             patch.object(report_workflow, "ShiftVideoGenerator", FakeVideoGenerator),
             patch.object(report_workflow, "cleanup_shift_sources", fake_cleanup),
             patch.object(report_workflow, "backoff_retry", _immediate_retry),
+            self.assertLogs("reports-generator", level="INFO") as logs,
         ):
             wf = self._workflow(tmp)
             run = ShiftRun("13-07-2026", "Shift_C")
@@ -70,19 +70,14 @@ class WorkflowSourceCleanupTest(TestCase):
 
             result = wf.results["caster1"]
 
-        self.assertEqual(
-            calls,
-            [(
-                Path("history-root"),
-                "13-07-2026",
-                "Shift_C",
-                [Path("history-root/2026_07_13/Shift_C_img/frame.jpeg")],
-            )],
-        )
+        self.assertEqual(calls, [(Path("history-root"), "13-07-2026", "Shift_C", "Caster 1")])
         self.assertEqual(
             result.state["normal_shift_source_cleanup"],
-            {"deleted_files": ["history-root/2026_07_13/Shift_C_img/frame.jpeg"]},
+            {"deleted_dirs": ["history-root/2026_07_13/Shift_C_img"], "failed_dirs": {}},
         )
+        joined_logs = "\n".join(logs.output)
+        self.assertIn("Caster 1 video is generating", joined_logs)
+        self.assertIn("Caster 1 source folder cleanup completed", joined_logs)
 
     def test_source_cleanup_does_not_run_when_normal_shift_video_fails(self):
         calls = []
@@ -90,13 +85,12 @@ class WorkflowSourceCleanupTest(TestCase):
         class FailingVideoGenerator:
             def __init__(self, date_str, shift, cfg=None, caster=None):
                 self.image_root = Path("history-root")
-                self.source_image_paths = [Path("history-root/2026_07_13/Shift_C_img/frame.jpeg")]
 
             def generate(self):
                 raise RuntimeError("video failed")
 
-        def fake_cleanup(history_root, date_str, shift, *, image_paths=None):
-            calls.append((history_root, date_str, shift, image_paths))
+        def fake_cleanup(history_root, date_str, shift, *, caster_name=None):
+            calls.append((history_root, date_str, shift, caster_name))
             return {}
 
         with (
