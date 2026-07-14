@@ -96,7 +96,7 @@ video:
   fps: 10
   codec: mp4v
   # auto reads the source app publish_overlay flag; true means history images already have overlays.
-  input_images_have_overlay: auto
+  input_images_have_overlay: false
   resolution:
     width: auto
     height: auto

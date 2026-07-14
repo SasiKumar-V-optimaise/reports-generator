@@ -19,6 +19,7 @@ from reports.common.email_sender import EmailSender
 from reports.common.gdrive_uploader import GDriveUploader
 from reports.pipes.pipe_exporter import PipeExporter
 from reports.pipes.verified_pipes import VerifiedPipeExporter
+from reports.video.source_cleanup import cleanup_shift_sources
 from reports.video.video_generator import ShiftVideoGenerator
 from reports.video.video_overlay import ShiftVideoOverlayGenerator
 
@@ -833,6 +834,25 @@ class ShiftWorkflow:
                 result.state["normal_shift_video_uploaded"] = False
                 result.state["video_path"] = result.full_shift_video_path
                 result.state["video_drive_link"] = None
+                try:
+                    history_root = getattr(video_gen, "image_root", None)
+                    if history_root is None:
+                        history_root = (self.root / caster.cfg["history"]["image_root"]).resolve()
+                    cleanup_summary = cleanup_shift_sources(
+                        history_root,
+                        run.date_str,
+                        run.shift_name,
+                        image_paths=getattr(video_gen, "source_image_paths", None),
+                    )
+                    result.state["normal_shift_source_cleanup"] = cleanup_summary
+                    if cleanup_summary.get("failed_files") or cleanup_summary.get("failed_dirs"):
+                        result.errors.append("Normal shift source cleanup failed for one or more paths")
+                        result.state["errors"] = result.errors
+                except Exception:
+                    result.state["normal_shift_source_cleanup_error"] = traceback.format_exc()
+                    result.errors.append("Normal shift source cleanup failed:\n" + result.state["normal_shift_source_cleanup_error"])
+                    result.state["errors"] = result.errors
+                    logger.exception("Normal shift source cleanup failed | caster=%s", caster.id)
                 self._save_state(run, caster, result.state)
             except Exception:
                 self._record_error(run, result, "Normal shift video generation failed")

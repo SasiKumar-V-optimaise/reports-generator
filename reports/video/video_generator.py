@@ -60,6 +60,7 @@ class ShiftVideoGenerator:
     def generate(self):
 
         images = self._collect_images()
+        self.source_image_paths = images
         if not images:
             raise RuntimeError("No images found for shift")
 
@@ -93,6 +94,7 @@ class ShiftVideoGenerator:
 
         start_time = time.time()
         total = len(images)
+        written = 0
 
         for i, img in enumerate(images, 1):
 
@@ -113,8 +115,12 @@ class ShiftVideoGenerator:
                 )
 
             writer.write(frame)
+            written += 1
 
         writer.release()
+
+        if written == 0:
+            raise RuntimeError("No readable frames were written to video")
 
         total_time = int(time.time() - start_time)
 
