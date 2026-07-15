@@ -834,6 +834,9 @@ class ShiftWorkflow:
                     cfg=caster.cfg,
                     caster=caster,
                 )
+                video_gen.verified_report_path = (
+                    result.verified_path or result.state.get("verified_pipes_csv_path")
+                )
                 result.full_shift_video_path = backoff_retry(
                     lambda: video_gen.generate(),
                     what=f"{caster.id} normal shift video generation",

@@ -65,6 +65,7 @@ verified_pipe_records_recipients:
   - dipquality@electrosteel.com
   - swsdp@electrosteel.com
   - info@v-optimai.com
+  - srinukotaru@electrosteel.com
 
 email:
   smtp_server: smtp.gmail.com
@@ -91,7 +92,7 @@ email:
     - shyamsundar.pilli@v-optimai.com
     - aakashpalina2019@gmail.com
     - sridharcharanchekka@gmail.com
-   
+  
 video:
   fps: 10
   codec: mp4v
@@ -128,7 +129,7 @@ casters:
   items:
     - id: caster1
       number: 1
-      enabled: true
+      enabled: false
       var_dir: ../electrosteel_pipe_detection_prod/var/caster_1
       rois:
         path: ../electrosteel_pipe_detection_prod/config/casters/caster_1/rois.yaml
@@ -142,7 +143,7 @@ casters:
 
     - id: caster3
       number: 3
-      enabled: false
+      enabled: true
       var_dir: ../electrosteel_pipe_detection_prod/var/caster_3
       rois:
         path: ../electrosteel_pipe_detection_prod/config/casters/caster_3/rois.yaml

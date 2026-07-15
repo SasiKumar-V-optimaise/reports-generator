@@ -1,7 +1,9 @@
 import cv2
+import csv
 import glob
 import time
 import logging
+from bisect import bisect_right
 from pathlib import Path
 from datetime import datetime, timedelta
 
@@ -21,7 +23,14 @@ class ShiftVideoGenerator:
     """
 
     # ---------------- INIT ----------------
-    def __init__(self, date_str: str, shift: str, cfg: dict | None = None, caster=None):
+    def __init__(
+        self,
+        date_str: str,
+        shift: str,
+        cfg: dict | None = None,
+        caster=None,
+        verified_report_path: str | Path | None = None,
+    ):
 
         self.date_str = date_str
         self.shift = shift.upper()
@@ -39,6 +48,7 @@ class ShiftVideoGenerator:
         self.caster = caster
         self.caster_file_token = getattr(caster, "file_token", None)
         self.caster_log_label = caster_label(caster, cfg)
+        self.verified_report_path = verified_report_path
 
         self.video_cfg = cfg["video"]
         self.image_root = (self.root / cfg["history"]["image_root"]).resolve()
@@ -96,6 +106,9 @@ class ShiftVideoGenerator:
         start_time = time.time()
         total = len(images)
         written = 0
+        pipe_timeline = self._load_verified_pipe_timeline()
+        pipe_origin_times = [entry[0] for entry in pipe_timeline]
+        pipe_counts = [entry[1] for entry in pipe_timeline]
 
         for i, img in enumerate(images, 1):
 
@@ -114,6 +127,14 @@ class ShiftVideoGenerator:
                     cv2.FONT_HERSHEY_SIMPLEX,
                     0.7, (0, 255, 255), 2, cv2.LINE_AA
                 )
+
+            pipe_count = self._pipe_count_for_frame(
+                self._datetime_from_name(img),
+                pipe_origin_times,
+                pipe_counts,
+            )
+            if pipe_count is not None:
+                self._draw_pipe_count(frame, pipe_count)
 
             writer.write(frame)
             written += 1
@@ -172,6 +193,121 @@ class ShiftVideoGenerator:
             return f"{yyyy}-{mm}-{dd} {hh}:{mi}:{ss}"
         except Exception:
             return None
+
+    @staticmethod
+    def _datetime_from_name(path):
+        try:
+            name = Path(path).stem.split("_")[-1]
+            dd, mm, yyyy, hh, mi, ss = name.split("-")[:6]
+            return datetime(int(yyyy), int(mm), int(dd), int(hh), int(mi), int(ss))
+        except (IndexError, ValueError):
+            return None
+
+    def _load_verified_pipe_timeline(self):
+        path = self._resolved_verified_report_path()
+        if path is None:
+            return []
+        if not path.exists():
+            logger.warning(
+                "Verified pipe report not found; continuing without pipe count overlay | path=%s",
+                path,
+            )
+            return []
+
+        entries = []
+        try:
+            with open(path, newline="", encoding="utf-8-sig") as handle:
+                reader = csv.DictReader(handle)
+                columns = {str(name).strip().lower(): name for name in (reader.fieldnames or [])}
+                pipe_column = columns.get("pipe number")
+                origin_column = columns.get("origin time")
+                if not pipe_column or not origin_column:
+                    logger.warning(
+                        "Verified pipe report missing required columns; continuing without pipe count overlay | path=%s",
+                        path,
+                    )
+                    return []
+
+                for row in reader:
+                    pipe_number = self._parse_pipe_number(row.get(pipe_column))
+                    origin_time = self._parse_verified_origin_time(row.get(origin_column))
+                    if pipe_number is None or origin_time is None:
+                        continue
+                    entries.append((origin_time, pipe_number))
+        except (OSError, csv.Error) as exc:
+            logger.warning(
+                "Unable to read verified pipe report; continuing without pipe count overlay | path=%s | error=%s",
+                path,
+                exc,
+            )
+            return []
+
+        entries.sort(key=lambda entry: (entry[0], entry[1]))
+        return entries
+
+    def _resolved_verified_report_path(self):
+        if not self.verified_report_path:
+            return None
+        path = Path(self.verified_report_path)
+        return path if path.is_absolute() else (self.root / path).resolve()
+
+    @staticmethod
+    def _parse_pipe_number(value):
+        if value is None:
+            return None
+        text = str(value).strip()
+        if not text:
+            return None
+        try:
+            pipe_number = int(float(text))
+        except ValueError:
+            return None
+        return pipe_number if pipe_number > 0 else None
+
+    @staticmethod
+    def _parse_verified_origin_time(value):
+        if value is None:
+            return None
+        text = str(value).strip()
+        if not text:
+            return None
+
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%d-%m-%Y %H:%M:%S", "%d/%m/%Y %H:%M:%S"):
+            try:
+                return datetime.strptime(text, fmt)
+            except ValueError:
+                continue
+
+        try:
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        if parsed.tzinfo is not None:
+            parsed = parsed.astimezone().replace(tzinfo=None)
+        return parsed
+
+    @staticmethod
+    def _pipe_count_for_frame(frame_time, pipe_origin_times, pipe_counts):
+        if frame_time is None or not pipe_origin_times:
+            return None
+
+        index = bisect_right(pipe_origin_times, frame_time) - 1
+        if index < 0:
+            return None
+        return pipe_counts[index]
+
+    @staticmethod
+    def _draw_pipe_count(frame, pipe_count):
+        cv2.putText(
+            frame,
+            f"Pipe Count: {pipe_count}",
+            (20, 35),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.7,
+            (0, 255, 255),
+            2,
+            cv2.LINE_AA,
+        )
 
     # ---------------- HOUR ----------------
     @staticmethod
