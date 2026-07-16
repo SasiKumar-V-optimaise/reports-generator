@@ -1,6 +1,7 @@
 import argparse
 import json
 import logging
+import math
 import os
 import sys
 import time
@@ -41,11 +42,14 @@ class CasterRunResult:
     csv_path: str | None = None
     csv_drive_link: str | None = None
     pipe_count: int | str = 0
+    raw_exported: bool = False
     raw_email_sent: bool = False
     verified_path: str | None = None
     verified_summary: dict | None = None
+    verified_exported: bool = False
     diagnosis_path: str | None = None
     diagnosis_summary: dict | None = None
+    diagnosis_exported: bool = False
     missing_overlay_link: str | None = None
     missing_normal_link: str | None = None
     full_shift_video_path: str | None = None
@@ -435,67 +439,397 @@ class ShiftWorkflow:
                     logger.warning("Failed to delete %s missing-loadcell video | %s | error=%s", kind, path, exc)
             self._save_state(run, result.caster, result.state)
 
-    def _send_raw_csv_email(self, run: ShiftRun, result: CasterRunResult) -> bool:
-        cfg = result.caster.cfg
-        if not bool((cfg.get("email", {}) or {}).get("send_csv_attachment", True)):
-            reason = "email.send_csv_attachment is false"
-            result.state["emailed_csv"] = False
-            result.state["csv_email_skip_reason"] = reason
-            self._save_state(run, result.caster, result.state)
-            logger.info("Raw CSV email skipped | caster=%s | reason=%s", result.caster.id, reason)
-            return False
-        recipients = None
-        if self.test_mode:
-            recipients = self._test_recipients(cfg)
-            if not recipients:
-                reason = self._test_mode_skip_reason()
-                result.state["emailed_csv"] = False
-                result.state["csv_email_skip_reason"] = reason
-                self._save_state(run, result.caster, result.state)
-                logger.info("Raw CSV email skipped | caster=%s | reason=%s", result.caster.id, reason)
-                return False
+    @staticmethod
+    def _shift_display_name(shift: str) -> str:
+        value = str(shift or "").strip()
+        if value.lower().startswith("shift_"):
+            return value.split("_", 1)[1].upper()
+        return value.upper()
 
-        password_skip_reason = self._email_password_skip_reason(cfg)
-        if password_skip_reason:
-            result.state["emailed_csv"] = False
-            result.state["csv_email_skip_reason"] = password_skip_reason
-            self._save_state(run, result.caster, result.state)
-            logger.info("Raw CSV email skipped | caster=%s | reason=%s", result.caster.id, password_skip_reason)
-            return False
+    @staticmethod
+    def _caster_sort_key(caster: CasterConfig) -> tuple[int, str]:
+        try:
+            number = int(caster.number)
+        except (TypeError, ValueError):
+            number = 9999
+        return number, str(caster.id)
 
-        subject = self._email_subject(
-            f"Pipe Report CSV - {caster_label(result.caster, cfg)} - {run.shift_name} - {run.date_str}"
-        )
-        body = "\n".join([
-            "Pipe Production Report",
-            "",
-            f"Date       : {run.date_str}",
-            f"Caster id  : {result.caster.id}",
-            f"Caster     : {caster_label(result.caster, cfg)}",
-            f"Shift      : {run.shift_name}",
-            f"Pipe Count : {result.pipe_count}",
-            "",
-            "CSV attached.",
-        ])
-        backoff_retry(
-            lambda: self._mailer(result.caster).send_csv(subject, body, result.csv_path, recipients=recipients),
-            what="Email CSV",
-        )
-        result.state["emailed_csv"] = True
+    def _ordered_results(self, casters: list[CasterConfig]) -> list[CasterRunResult]:
+        ordered_casters = sorted(casters, key=self._caster_sort_key)
+        return [self.results.setdefault(caster.id, CasterRunResult(caster=caster)) for caster in ordered_casters]
+
+    @staticmethod
+    def _display_count(value, *, unavailable: str = "0") -> str:
+        if value is None:
+            return unavailable
+        if isinstance(value, str):
+            value = value.strip()
+            return value if value else unavailable
+        if isinstance(value, float):
+            if math.isnan(value):
+                return unavailable
+            if value.is_integer():
+                return str(int(value))
+        return str(value)
+
+    @staticmethod
+    def _display_text(value) -> str:
+        text = "" if value is None else str(value).strip()
+        return text or "N/A"
+
+    def _summary_count(self, summary: dict | None, key: str, *, unavailable: str = "0") -> str:
+        return self._display_count((summary or {}).get(key), unavailable=unavailable)
+
+    @staticmethod
+    def _report_type_label(report_type: str) -> str:
+        labels = {
+            "raw": "Raw Production Report",
+            "verified": "Verified Production Report",
+            "diagnosis": "Pipe Diagnosis Report",
+        }
+        return labels.get(report_type, report_type)
+
+    @staticmethod
+    def _report_state_keys(report_type: str) -> tuple[str, str, str]:
+        if report_type == "raw":
+            return "emailed_csv", "csv_email_skip_reason", "csv_email_recipients"
+        if report_type == "verified":
+            return "emailed_verified_pipes", "verified_pipes_skip_reason", "verified_pipe_records_recipients"
+        if report_type == "diagnosis":
+            return "emailed_diagnosis_xlsx", "diagnosis_skip_reason", "diagnosis_recipients"
+        raise ValueError(f"Unknown report type: {report_type}")
+
+    def _set_report_email_state(
+        self,
+        run: ShiftRun,
+        result: CasterRunResult,
+        report_type: str,
+        sent: bool,
+        *,
+        recipients: list[str] | None = None,
+        reason: str | None = None,
+    ):
+        sent_key, skip_key, recipients_key = self._report_state_keys(report_type)
+        result.state[sent_key] = sent
         result.state["email_test_mode"] = self.test_mode
-        result.state["csv_email_recipients"] = recipients if self.test_mode else self._email_recipients(cfg)
-        result.raw_email_sent = True
-        logger.info(
-            "Raw CSV email sent | caster=%s | test=%s | recipients=%s | path=%s",
-            result.caster.id,
-            self.test_mode,
-            len(result.state["csv_email_recipients"]),
-            result.csv_path,
-        )
+        if sent:
+            result.state.pop(skip_key, None)
+            result.state[recipients_key] = recipients or []
+        elif reason:
+            result.state[skip_key] = reason
+        if report_type == "raw":
+            result.raw_email_sent = sent
         self._save_state(run, result.caster, result.state)
+
+    def _report_recipients(self, report_type: str, cfg: dict) -> list[str]:
+        if self.test_mode:
+            return self._test_recipients(cfg)
+        if report_type == "raw":
+            return self._email_recipients(cfg)
+        if report_type == "verified":
+            return self._verified_pipe_records_recipients(cfg)
+        if report_type == "diagnosis":
+            return self._diagnosis_recipients(cfg)
+        raise ValueError(f"Unknown report type: {report_type}")
+
+    def _no_recipients_reason(self, report_type: str) -> str:
+        if self.test_mode:
+            return self._test_mode_skip_reason()
+        if report_type == "raw":
+            return "No email.recipients configured"
+        if report_type == "verified":
+            return "No verified_pipe_records_recipients configured"
+        if report_type == "diagnosis":
+            return "No email.diagnosis_recipients configured"
+        return "No email recipients configured"
+
+    def _consolidated_send_context(
+        self,
+        report_type: str,
+        results: list[CasterRunResult],
+    ) -> tuple[CasterConfig | None, list[str], str | None]:
+        recipients: list[str] = []
+        mailer_caster = None
+        fallback_reason = None
+        for result in results:
+            cfg = result.caster.cfg
+            result_recipients = self._report_recipients(report_type, cfg)
+            if not result_recipients:
+                fallback_reason = self._no_recipients_reason(report_type)
+                continue
+            for recipient in result_recipients:
+                if recipient not in recipients:
+                    recipients.append(recipient)
+
+            password_skip_reason = self._email_password_skip_reason(cfg)
+            if password_skip_reason:
+                fallback_reason = password_skip_reason
+                continue
+            if mailer_caster is None:
+                mailer_caster = result.caster
+
+        if mailer_caster is not None and recipients:
+            return mailer_caster, recipients, None
+        return None, [], fallback_reason or self._no_recipients_reason(report_type)
+
+    def _should_send_report_result(self, result: CasterRunResult, report_type: str) -> bool:
+        exported_now = {
+            "raw": result.raw_exported,
+            "verified": result.verified_exported,
+            "diagnosis": result.diagnosis_exported,
+        }[report_type]
+        if exported_now:
+            return True
+        sent_key, _skip_key, _recipients_key = self._report_state_keys(report_type)
+        return not bool(result.state.get(sent_key))
+
+    def _log_missing_attachment(self, run: ShiftRun, result: CasterRunResult, report_type: str, path: str):
+        logger.warning(
+            "Missing attachment | caster=%s | caster_number=%s | report_type=%s | date=%s | shift=%s | path=%s",
+            result.caster.id,
+            result.caster.number,
+            self._report_type_label(report_type),
+            run.date_str,
+            run.shift_name,
+            path,
+        )
+
+    def _report_attachment_items(
+        self,
+        casters: list[CasterConfig],
+        run: ShiftRun,
+        report_type: str,
+        path_attr: str,
+        state_path_key: str,
+    ) -> list[tuple[CasterRunResult, str]]:
+        items: list[tuple[CasterRunResult, str]] = []
+        for result in self._ordered_results(casters):
+            if not self._should_send_report_result(result, report_type):
+                continue
+            if report_type == "raw" and not bool((result.caster.cfg.get("email", {}) or {}).get("send_csv_attachment", True)):
+                reason = "email.send_csv_attachment is false"
+                self._set_report_email_state(run, result, report_type, False, reason=reason)
+                logger.info("Raw CSV email skipped | caster=%s | reason=%s", result.caster.id, reason)
+                continue
+
+            path_value = getattr(result, path_attr) or result.state.get(state_path_key)
+            if not path_value:
+                continue
+            attachment_path = str(path_value)
+            if not Path(attachment_path).exists():
+                reason = f"{self._report_type_label(report_type)} attachment missing: {attachment_path}"
+                self._set_report_email_state(run, result, report_type, False, reason=reason)
+                self._log_missing_attachment(run, result, report_type, attachment_path)
+                continue
+            items.append((result, attachment_path))
+        return items
+
+    def _record_consolidated_email_failure(
+        self,
+        run: ShiftRun,
+        report_type: str,
+        items: list[tuple[CasterRunResult, str]],
+        exc: Exception,
+    ):
+        reason = str(exc) or "Email sending failed"
+        exc_text = traceback.format_exc()
+        label = self._report_type_label(report_type)
+        for result, _path in items:
+            self._set_report_email_state(run, result, report_type, False, reason=reason)
+            self._record_error(run, result, f"{label} email failed", exc_text)
+            logger.error(
+                "Email sending failure | caster=%s | caster_number=%s | report_type=%s | date=%s | shift=%s | error=%s",
+                result.caster.id,
+                result.caster.number,
+                label,
+                run.date_str,
+                run.shift_name,
+                reason,
+            )
+
+    @staticmethod
+    def _attachment_note(file_label: str, count: int) -> str:
+        noun = "files" if count != 1 else "file"
+        return f"{file_label} {noun} attached."
+
+    def _send_consolidated_email(
+        self,
+        report_type: str,
+        run: ShiftRun,
+        items: list[tuple[CasterRunResult, str]],
+        subject: str,
+        body: str,
+    ) -> bool:
+        label = self._report_type_label(report_type)
+        if not items:
+            logger.info(
+                "Consolidated %s email skipped | date=%s | shift=%s | reason=no eligible attachments",
+                label,
+                run.date_str,
+                run.shift_name,
+            )
+            return False
+
+        results = [result for result, _path in items]
+        mailer_caster, recipients, skip_reason = self._consolidated_send_context(report_type, results)
+        if mailer_caster is None:
+            reason = skip_reason or self._no_recipients_reason(report_type)
+            for result in results:
+                self._set_report_email_state(run, result, report_type, False, reason=reason)
+            logger.info(
+                "Consolidated %s email skipped | date=%s | shift=%s | reason=%s",
+                label,
+                run.date_str,
+                run.shift_name,
+                reason,
+            )
+            return False
+
+        attachments = [path for _result, path in items]
+        try:
+            backoff_retry(
+                lambda: self._mailer(mailer_caster).send(
+                    self._email_subject(subject),
+                    body,
+                    attachments=attachments,
+                    recipients=recipients,
+                ),
+                what=f"{label} consolidated email",
+            )
+        except Exception as exc:
+            self._record_consolidated_email_failure(run, report_type, items, exc)
+            return False
+
+        for result in results:
+            self._set_report_email_state(run, result, report_type, True, recipients=recipients)
+        logger.info(
+            "Consolidated %s email sent | date=%s | shift=%s | casters=%s | attachments=%s | recipients=%s | test=%s",
+            label,
+            run.date_str,
+            run.shift_name,
+            [result.caster.id for result in results],
+            len(attachments),
+            len(recipients),
+            self.test_mode,
+        )
         return True
 
-    def _send_verified_pipes_report(self, run: ShiftRun, result: CasterRunResult):
+    def _send_consolidated_raw_csv_email(self, casters: list[CasterConfig], run: ShiftRun) -> bool:
+        items = self._report_attachment_items(casters, run, "raw", "csv_path", "csv_path")
+        if not items:
+            return self._send_consolidated_email("raw", run, items, "", "")
+
+        shift_name = self._shift_display_name(run.shift_name)
+        body_lines = [
+            "Pipe Production Report",
+            "",
+            f"Date  : {run.date_str}",
+            f"Shift : {shift_name}",
+            "",
+        ]
+        for result, _path in items:
+            count = result.pipe_count if result.pipe_count not in (None, "") else result.state.get("pipe_count")
+            body_lines.append(f"{caster_label(result.caster, result.caster.cfg)} : {self._display_count(count)}")
+        body_lines.extend(["", self._attachment_note("CSV", len(items))])
+
+        subject = f"Raw Pipe Production Report - {run.date_str} - Shift {shift_name}"
+        return self._send_consolidated_email("raw", run, items, subject, "\n".join(body_lines))
+
+    def _send_consolidated_verified_pipes_email(self, casters: list[CasterConfig], run: ShiftRun) -> bool:
+        items = self._report_attachment_items(casters, run, "verified", "verified_path", "verified_pipes_csv_path")
+        if not items:
+            return self._send_consolidated_email("verified", run, items, "", "")
+
+        shift_name = self._shift_display_name(run.shift_name)
+        body_lines = [
+            "Pipe Production Report",
+            "",
+            f"Date  : {run.date_str}",
+            f"Shift : {shift_name}",
+            "",
+        ]
+        for result, _path in items:
+            summary = result.verified_summary or result.state.get("verified_pipes_summary") or {}
+            body_lines.append(
+                f"{caster_label(result.caster, result.caster.cfg)} : "
+                f"{self._summary_count(summary, 'verified_count', unavailable='N/A')}"
+            )
+        body_lines.extend(["", self._attachment_note("CSV", len(items))])
+
+        subject = f"Verified Pipe Production Report - {run.date_str} - Shift {shift_name}"
+        return self._send_consolidated_email("verified", run, items, subject, "\n".join(body_lines))
+
+    def _missing_loadcell_video_text(self, result: CasterRunResult, kind: str) -> str:
+        if kind == "overlay":
+            link = result.missing_overlay_link or result.state.get("missing_loadcell_overlay_video_drive_link")
+            skip_reason = result.state.get("missing_loadcell_overlay_video_skip_reason")
+        else:
+            link = result.missing_normal_link or result.state.get("missing_loadcell_normal_video_drive_link")
+            skip_reason = result.state.get("missing_loadcell_normal_video_skip_reason")
+        if link:
+            return str(link)
+        if skip_reason:
+            return f"N/A - {skip_reason}"
+        return "N/A"
+
+    def _diagnosis_section_lines(self, result: CasterRunResult) -> list[str]:
+        diagnosis_summary = result.diagnosis_summary or result.state.get("diagnosis_summary") or {}
+        verified_summary = result.verified_summary or result.state.get("verified_pipes_summary") or {}
+        min_gap_label, max_gap_label = self._diagnosis_gap_labels(diagnosis_summary)
+        pipe_count = self._summary_count(diagnosis_summary, "pipe_count")
+        pipe_noun = "Pipe" if pipe_count == "1" else "Pipes"
+        return [
+            f"### {caster_label(result.caster, result.caster.cfg)}: {pipe_count} {pipe_noun}",
+            "",
+            f"Abnormal Rows                       : {self._summary_count(diagnosis_summary, 'abnormal_count')}",
+            f"T-Origin Gap Abnormal               : {self._summary_count(diagnosis_summary, 't_origin_gap_abnormal_count')}",
+            f"T-Origin Gap Above {max_gap_label}         : {self._summary_count(diagnosis_summary, 't_origin_gap_too_slow_count')}",
+            f"T-Origin Gap Below {min_gap_label}         : {self._summary_count(diagnosis_summary, 't_origin_gap_too_fast_count')}",
+            f"Loadcell Missing Rows               : {self._summary_count(diagnosis_summary, 'loadcell_missing_count')}",
+            f"Removed Pipe ID Count               : {self._summary_count(verified_summary, 'removed_count', unavailable='N/A')}",
+            f"Removed Pipe ID Reason              : {self._display_text(self._removed_pipe_reason(verified_summary))}",
+            "",
+            "Missing Loadcell Videos",
+            "",
+            f"Overlay Video Link                  : {self._missing_loadcell_video_text(result, 'overlay')}",
+            f"Normal Video Link                   : {self._missing_loadcell_video_text(result, 'normal')}",
+        ]
+
+    def _send_consolidated_diagnosis_email(self, casters: list[CasterConfig], run: ShiftRun) -> bool:
+        attachment_items = self._report_attachment_items(casters, run, "diagnosis", "diagnosis_path", "diagnosis_xlsx_path")
+        items: list[tuple[CasterRunResult, str]] = []
+        for result, path in attachment_items:
+            if not (result.diagnosis_summary or result.state.get("diagnosis_summary")):
+                reason = "Diagnosis summary unavailable"
+                self._set_report_email_state(run, result, "diagnosis", False, reason=reason)
+                logger.info("Diagnosis email skipped | caster=%s | reason=%s", result.caster.id, reason)
+                continue
+            items.append((result, path))
+        if not items:
+            return self._send_consolidated_email("diagnosis", run, items, "", "")
+
+        shift_name = self._shift_display_name(run.shift_name)
+        body_lines = [
+            "Pipe Diagnosis Report",
+            "",
+            f"Date  : {run.date_str}",
+            f"Shift : {shift_name}",
+            "",
+        ]
+        for idx, (result, _path) in enumerate(items):
+            if idx:
+                body_lines.append("")
+            body_lines.extend(self._diagnosis_section_lines(result))
+        body_lines.extend(["", self._attachment_note("Excel", len(items))])
+
+        subject = f"Pipe Diagnosis Report - {run.date_str} - Shift {shift_name}"
+        return self._send_consolidated_email("diagnosis", run, items, subject, "\n".join(body_lines))
+
+    def _send_raw_csv_email(self, run: ShiftRun, result: CasterRunResult) -> bool:
+        self.results[result.caster.id] = result
+        return self._send_consolidated_raw_csv_email([result.caster], run)
+
+    def _export_verified_pipes_report(self, run: ShiftRun, result: CasterRunResult):
         cfg = result.caster.cfg
         verified_exporter = VerifiedPipeExporter(cfg=cfg, caster=result.caster)
         verified_path_obj, verified_summary = backoff_retry(
@@ -509,76 +843,22 @@ class ShiftWorkflow:
         )
         result.verified_path = str(verified_path_obj)
         result.verified_summary = verified_summary
+        result.verified_exported = True
         result.state["verified_pipes_csv_path"] = result.verified_path
         result.state["verified_pipes_summary"] = verified_summary
         self._save_state(run, result.caster, result.state)
 
-        recipients = self._test_recipients(cfg) if self.test_mode else self._verified_pipe_records_recipients(cfg)
-        if not recipients:
-            reason = self._test_mode_skip_reason() if self.test_mode else "No verified_pipe_records_recipients configured"
-            result.state["emailed_verified_pipes"] = False
-            result.state["verified_pipes_skip_reason"] = reason
-            self._save_state(run, result.caster, result.state)
-            logger.info("Verified pipes email skipped | caster=%s | reason=%s", result.caster.id, reason)
-            return
-        password_skip_reason = self._email_password_skip_reason(cfg)
-        if password_skip_reason:
-            result.state["emailed_verified_pipes"] = False
-            result.state["verified_pipes_skip_reason"] = password_skip_reason
-            self._save_state(run, result.caster, result.state)
-            logger.info("Verified pipes email skipped | caster=%s | reason=%s", result.caster.id, password_skip_reason)
-            return
-
-        subject = self._email_subject(
-            f"Verified Pipe Records - {result.caster.id} - "
-            f"{run.shift_name} - {run.date_str} - Pipe Count {verified_summary['verified_count']}"
-        )
-        body = "\n".join([
-            f"Date                  : {run.date_str}",
-            f"Caster id             : {result.caster.id}",
-            f"Shift                 : {run.shift_name}",
-            "",
-            f"Pipe Count            : {verified_summary['verified_count']}",
-        ])
-        backoff_retry(
-            lambda: self._mailer(result.caster).send_csv(
-                subject,
-                body,
-                result.verified_path,
-                recipients=recipients,
-            ),
-            what=f"{result.caster.id} verified pipes email",
-        )
-        result.state["emailed_verified_pipes"] = True
-        result.state["email_test_mode"] = self.test_mode
-        result.state["verified_pipe_records_recipients"] = recipients
-        self._save_state(run, result.caster, result.state)
-        logger.info(
-            "Verified pipes email sent | caster=%s | test=%s | verified=%s | removed=%s | recipients=%s | path=%s",
-            result.caster.id,
-            self.test_mode,
-            verified_summary.get("verified_count"),
-            verified_summary.get("removed_count"),
-            len(recipients),
-            result.verified_path,
-        )
+    def _send_verified_pipes_report(self, run: ShiftRun, result: CasterRunResult):
+        self.results[result.caster.id] = result
+        self._export_verified_pipes_report(run, result)
+        self._send_consolidated_verified_pipes_email([result.caster], run)
 
     def _missing_loadcell_video_lines(self, result: CasterRunResult) -> list[str]:
-        overlay_link = result.missing_overlay_link or result.state.get("missing_loadcell_overlay_video_drive_link")
-        normal_link = result.missing_normal_link or result.state.get("missing_loadcell_normal_video_drive_link")
-        overlay_skip = result.state.get("missing_loadcell_overlay_video_skip_reason")
-        normal_skip = result.state.get("missing_loadcell_normal_video_skip_reason")
-        has_video_state = any((overlay_link, normal_link, overlay_skip, normal_skip))
-        if not has_video_state:
-            return []
-
-        overlay_text = overlay_link or (f"N/A ({overlay_skip})" if overlay_skip else "N/A")
-        normal_text = normal_link or (f"N/A ({normal_skip})" if normal_skip else "N/A")
         return [
             "",
             "Missing Loadcell Videos",
-            f"Overlay Video Link        : {overlay_text}",
-            f"Normal Video Link         : {normal_text}",
+            f"Overlay Video Link        : {self._missing_loadcell_video_text(result, 'overlay')}",
+            f"Normal Video Link         : {self._missing_loadcell_video_text(result, 'normal')}",
         ]
 
     def _export_diagnosis_report(self, run: ShiftRun, result: CasterRunResult):
@@ -590,84 +870,19 @@ class ShiftWorkflow:
         )
         result.diagnosis_path = str(diagnosis_path_obj)
         result.diagnosis_summary = diagnosis_summary
+        result.diagnosis_exported = True
         result.state["diagnosis_xlsx_path"] = result.diagnosis_path
         result.state["diagnosis_summary"] = diagnosis_summary
         self._save_state(run, result.caster, result.state)
 
     def _send_diagnosis_email(self, run: ShiftRun, result: CasterRunResult):
-        cfg = result.caster.cfg
-        diagnosis_summary = result.diagnosis_summary or result.state.get("diagnosis_summary")
-        diagnosis_path = result.diagnosis_path or result.state.get("diagnosis_xlsx_path")
-        if not diagnosis_summary or not diagnosis_path:
-            reason = "Diagnosis XLSX unavailable"
-            result.state["emailed_diagnosis_xlsx"] = False
-            result.state["diagnosis_skip_reason"] = reason
-            self._save_state(run, result.caster, result.state)
-            logger.info("Diagnosis email skipped | caster=%s | reason=%s", result.caster.id, reason)
-            return
-
-        recipients = self._test_recipients(cfg) if self.test_mode else self._diagnosis_recipients(cfg)
-        if not recipients:
-            reason = self._test_mode_skip_reason() if self.test_mode else "No email.diagnosis_recipients configured"
-            result.state["emailed_diagnosis_xlsx"] = False
-            result.state["diagnosis_skip_reason"] = reason
-            self._save_state(run, result.caster, result.state)
-            logger.info("Diagnosis email skipped | caster=%s | reason=%s", result.caster.id, reason)
-            return
-        password_skip_reason = self._email_password_skip_reason(cfg)
-        if password_skip_reason:
-            result.state["emailed_diagnosis_xlsx"] = False
-            result.state["diagnosis_skip_reason"] = password_skip_reason
-            self._save_state(run, result.caster, result.state)
-            logger.info("Diagnosis email skipped | caster=%s | reason=%s", result.caster.id, password_skip_reason)
-            return
-
-        min_gap_label, max_gap_label = self._diagnosis_gap_labels(diagnosis_summary)
-        subject = self._email_subject(
-            f"Pipe Diagnosis Report - {caster_label(result.caster, cfg)} - {run.shift_name} - {run.date_str}"
-        )
-        body_lines = [
-            "Pipe Diagnosis Report",
-            "",
-            f"Date                       : {run.date_str}",
-            f"Caster id                  : {result.caster.id}",
-            f"Caster                     : {caster_label(result.caster, cfg)}",
-            f"Shift                      : {run.shift_name}",
-            f"Pipe Count                 : {diagnosis_summary['pipe_count']}",
-            f"Abnormal Rows              : {diagnosis_summary['abnormal_count']}",
-            f"T-Origin Gap Abnormal      : {diagnosis_summary['t_origin_gap_abnormal_count']}",
-            f"T-Origin Gap Above {max_gap_label}: {diagnosis_summary['t_origin_gap_too_slow_count']}",
-            f"T-Origin Gap Below {min_gap_label}: {diagnosis_summary['t_origin_gap_too_fast_count']}",
-            f"Loadcell Missing Rows      : {diagnosis_summary['loadcell_missing_count']}",
-            *self._missing_loadcell_video_lines(result),
-            "",
-            "Diagnosis Excel file attached. Abnormal rows are highlighted red.",
-        ]
-        backoff_retry(
-            lambda: self._mailer(result.caster).send_csv(
-                subject,
-                "\n".join(body_lines),
-                diagnosis_path,
-                recipients=recipients,
-            ),
-            what=f"{result.caster.id} diagnosis email",
-        )
-        result.state["emailed_diagnosis_xlsx"] = True
-        result.state["email_test_mode"] = self.test_mode
-        result.state["diagnosis_recipients"] = recipients
-        self._save_state(run, result.caster, result.state)
-        logger.info(
-            "Diagnosis email sent | caster=%s | test=%s | abnormal=%s | recipients=%s | path=%s",
-            result.caster.id,
-            self.test_mode,
-            diagnosis_summary.get("abnormal_count"),
-            len(recipients),
-            diagnosis_path,
-        )
+        self.results[result.caster.id] = result
+        return self._send_consolidated_diagnosis_email([result.caster], run)
 
     def _send_diagnosis_report(self, run: ShiftRun, result: CasterRunResult):
+        self.results[result.caster.id] = result
         self._export_diagnosis_report(run, result)
-        self._send_diagnosis_email(run, result)
+        self._send_consolidated_diagnosis_email([result.caster], run)
 
     def load_selected_enabled_casters(self) -> list[CasterConfig]:
         return self.casters
@@ -687,6 +902,7 @@ class ShiftWorkflow:
                 result.pipe_count = state.get("pipe_count", 0)
                 result.csv_drive_link = state.get("csv_drive_link")
                 result.verified_summary = state.get("verified_pipes_summary")
+                result.raw_email_sent = bool(state.get("emailed_csv"))
                 continue
 
             self._clear_previous_run_outputs(state)
@@ -710,6 +926,7 @@ class ShiftWorkflow:
                 )
                 result.csv_path = str(csv_path_obj)
                 result.pipe_count = pipe_count
+                result.raw_exported = True
                 state["csv_path"] = result.csv_path
                 state["pipe_count"] = pipe_count
                 self._save_state(run, caster, state)
@@ -718,31 +935,35 @@ class ShiftWorkflow:
                 self._record_error(run, result, "CSV export failed")
                 logger.exception("CSV export failed | caster=%s", caster.id)
 
-            if result.csv_path:
-                try:
-                    self._send_raw_csv_email(run, result)
-                except Exception:
-                    self._record_error(run, result, "Email CSV failed")
-                    logger.exception("CSV email failed | caster=%s", caster.id)
+        self._send_consolidated_raw_csv_email(casters, run)
 
+        for caster in casters:
+            result = self.results.setdefault(caster.id, CasterRunResult(caster=caster))
+            state = result.state
+            if result.verified_path and not result.raw_exported and not force:
+                continue
             if result.csv_path and (result.raw_email_sent or not require_raw_email_for_verified):
                 try:
-                    self._send_verified_pipes_report(run, result)
+                    self._export_verified_pipes_report(run, result)
                 except Exception:
-                    self._record_error(run, result, "Verified pipes email failed")
-                    logger.exception("Verified pipes failed | caster=%s", caster.id)
+                    self._record_error(run, result, "Verified pipes CSV export failed")
+                    logger.exception("Verified pipes export failed | caster=%s", caster.id)
             elif result.csv_path and require_raw_email_for_verified:
                 state["emailed_verified_pipes"] = False
                 state["verified_pipes_skip_reason"] = "Raw CSV email was not sent"
                 self._save_state(run, caster, state)
                 logger.info("Verified pipes skipped | caster=%s | reason=%s", caster.id, state["verified_pipes_skip_reason"])
-            else:
+            elif not result.csv_path:
                 state["emailed_verified_pipes"] = False
                 state["verified_pipes_skip_reason"] = "Raw CSV export failed"
                 self._save_state(run, caster, state)
 
-            state["raw_verified_finished_at"] = datetime.now().isoformat(timespec="seconds")
-            self._save_state(run, caster, state)
+        self._send_consolidated_verified_pipes_email(casters, run)
+
+        for caster in casters:
+            result = self.results.setdefault(caster.id, CasterRunResult(caster=caster))
+            result.state["raw_verified_finished_at"] = datetime.now().isoformat(timespec="seconds")
+            self._save_state(run, caster, result.state)
 
     def phase_csv_uploads(self, casters: list[CasterConfig], run: ShiftRun):
         for caster in casters:
@@ -774,20 +995,19 @@ class ShiftWorkflow:
             result.state.setdefault("date", run.date_str)
             result.state.setdefault("shift", run.shift_name)
             result.state.setdefault("caster_id", caster.id)
+            result.state.setdefault("caster_number", caster.number)
             result.state["diagnosis_started_at"] = datetime.now().isoformat(timespec="seconds")
             self._save_state(run, caster, result.state)
             try:
                 self._export_diagnosis_report(run, result)
-                if send_email:
-                    self._send_diagnosis_email(run, result)
             except Exception:
-                label = "Diagnosis XLSX email failed" if send_email else "Diagnosis XLSX export failed"
-                self._record_error(run, result, label)
-                logger.exception("Diagnosis failed | caster=%s", caster.id)
+                self._record_error(run, result, "Diagnosis XLSX export failed")
+                logger.exception("Diagnosis export failed | caster=%s", caster.id)
             result.state["diagnosis_export_finished_at"] = datetime.now().isoformat(timespec="seconds")
-            if send_email:
-                result.state["diagnosis_finished_at"] = result.state["diagnosis_export_finished_at"]
             self._save_state(run, caster, result.state)
+
+        if send_email:
+            self.phase_diagnosis_emails(casters, run)
 
     def phase_missing_loadcell_videos(self, casters: list[CasterConfig], run: ShiftRun):
         for caster in casters:
@@ -801,13 +1021,17 @@ class ShiftWorkflow:
                 logger.exception("Missing-loadcell video failed | caster=%s", caster.id)
 
     def phase_diagnosis_emails(self, casters: list[CasterConfig], run: ShiftRun):
+        try:
+            self._send_consolidated_diagnosis_email(casters, run)
+        except Exception:
+            exc_text = traceback.format_exc()
+            for caster in casters:
+                result = self.results.setdefault(caster.id, CasterRunResult(caster=caster))
+                self._record_error(run, result, "Diagnosis XLSX email failed", exc_text)
+                logger.exception("Diagnosis email failed | caster=%s", caster.id)
+
         for caster in casters:
             result = self.results.setdefault(caster.id, CasterRunResult(caster=caster))
-            try:
-                self._send_diagnosis_email(run, result)
-            except Exception:
-                self._record_error(run, result, "Diagnosis XLSX email failed")
-                logger.exception("Diagnosis email failed | caster=%s", caster.id)
             result.state["diagnosis_finished_at"] = datetime.now().isoformat(timespec="seconds")
             self._save_state(run, caster, result.state)
 
