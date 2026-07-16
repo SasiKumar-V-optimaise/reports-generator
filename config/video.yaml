@@ -1,15 +1,16 @@
 video:
-  resolution:
+  fps: 5
+  codec: mp4v
+  input_images_have_overlay: false
+  source_resolution:
+    width: 1440
+    height: 1080
+  output_resolution:
     width: 1280
     height: 720
-
-  fps: 5
-
-  codec: mp4v
-
   overlay:
     font_scale: 0.7
     thickness: 2
-    color: [0, 255, 255]   # BGR (OpenCV)
+    color: [0, 255, 255]
     margin_bottom: 20
     margin_left: 20

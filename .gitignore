@@ -1,38 +1,37 @@
-# Python related
+/outputs/
+/runtime/
+/logs/
+
 __pycache__/
 *.py[cod]
 *$py.class
 
-# Virtual environments
-venv/
-.env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
 .venv/
+venv/
 *venv*/
 
-# Distribution / packaging
 build/
 dist/
 *.egg-info/
 .eggs/
 
-# Test and coverage
-.pytest_cache/
 .coverage
 htmlcov/
 coverage.xml
 
-# IDEs and editors
+.env
+.env.*
+config/runtime.local.yaml
+
 .vscode/
 .idea/
 *.sublime-workspace
 *.sublime-project
 
-# Logs and runtime files
-*.log
 *.pid
 *.sock
-
-# Output directories
-output/
-*output*
 

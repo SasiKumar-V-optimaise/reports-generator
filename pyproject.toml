@@ -1,7 +1,12 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
 [project]
 name = "reports-generator"
-version = "0.1.0"
-description = "Shift report generation tools for Electro Steel."
+version = "0.2.0"
+description = "Typed shift-report workflows for Electro Steel casters."
+readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "numpy>=2.0",
@@ -10,10 +15,40 @@ dependencies = [
     "pyyaml>=6.0",
 ]
 
+[project.scripts]
+reports-generator = "reports_generator.cli.main:main"
+
 [dependency-groups]
 dev = [
+    "mypy>=1.11",
     "pytest>=8.0",
+    "ruff>=0.6",
+    "types-pyyaml>=6.0",
 ]
 
-[tool.uv]
-package = false
+[tool.hatch.build.targets.wheel]
+packages = ["src/reports_generator"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+ignore = ["E501", "I001", "UP035", "UP033", "UP037", "B905", "SIM102", "F403", "F405"]
+
+[tool.mypy]
+python_version = "3.10"
+files = ["src"]
+strict = false
+disallow_untyped_defs = false
+check_untyped_defs = false
+warn_return_any = false
+disable_error_code = ["no-untyped-def", "no-untyped-call", "misc", "attr-defined", "arg-type", "valid-type"]
+ignore_missing_imports = true
+warn_unused_ignores = false

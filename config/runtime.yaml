@@ -1,184 +1,142 @@
+paths:
+  output_root: outputs
+  state_root: runtime/state
+  temp_root: runtime/temp
+  log_root: logs
+
 history:
   shifts:
     - name: Shift_A
       start: "06:00"
       end: "14:00"
-
     - name: Shift_B
       start: "14:00"
       end: "22:00"
-
     - name: Shift_C
       start: "22:00"
       end: "06:00"
 
-rois:
-  # Coordinate space used when the ROI YAML was saved, not the display/window size.
-  source_resolution:
-    width: 1440
-    height: 1080
+casters:
+  - id: caster1
+    display_name: Caster 1
+    active: false
+    database_directory: ../electrosteel_pipe_detection_prod/var/caster_1
+    database_file: caster_1_pipes.db
+    history_directory: ../electrosteel_pipe_detection_prod/var/caster_1/history
+    recording_directory: ../electrosteel_pipe_detection_prod/var/caster_1/recordings
+    roi_path: ../electrosteel_pipe_detection_prod/config/casters/caster_1/rois.yaml
+  - id: caster2
+    display_name: Caster 2
+    active: true
+    database_directory: ../electrosteel_pipe_detection_prod/var/caster_2
+    database_file: caster_2_pipes.db
+    history_directory: ../electrosteel_pipe_detection_prod/var/caster_2/history
+    recording_directory: ../electrosteel_pipe_detection_prod/var/caster_2/recordings
+    roi_path: ../electrosteel_pipe_detection_prod/config/casters/caster_2/rois.yaml
+  - id: caster3
+    display_name: Caster 3
+    active: true
+    database_directory: ../electrosteel_pipe_detection_prod/var/caster_3
+    database_file: caster_3_pipes.db
+    history_directory: ../electrosteel_pipe_detection_prod/var/caster_3/history
+    recording_directory: ../electrosteel_pipe_detection_prod/var/caster_3/recordings
+    roi_path: ../electrosteel_pipe_detection_prod/config/casters/caster_3/rois.yaml
+  - id: caster4
+    display_name: Caster 4
+    active: false
+    database_directory: ../electrosteel_pipe_detection_prod/var/caster_4
+    database_file: caster_4_pipes.db
+    history_directory: ../electrosteel_pipe_detection_prod/var/caster_4/history
+    recording_directory: ../electrosteel_pipe_detection_prod/var/caster_4/recordings
+    roi_path: ../electrosteel_pipe_detection_prod/config/casters/caster_4/rois.yaml
+  - id: caster5
+    display_name: Caster 5
+    active: false
+    database_directory: ../electrosteel_pipe_detection_prod/var/caster_5
+    database_file: caster_5_pipes.db
+    history_directory: ../electrosteel_pipe_detection_prod/var/caster_5/history
+    recording_directory: ../electrosteel_pipe_detection_prod/var/caster_5/recordings
+    roi_path: ../electrosteel_pipe_detection_prod/config/casters/caster_5/rois.yaml
+  - id: caster6
+    display_name: Caster 6
+    active: false
+    database_directory: ../electrosteel_pipe_detection_prod/var/caster_6
+    database_file: caster_6_pipes.db
+    history_directory: ../electrosteel_pipe_detection_prod/var/caster_6/history
+    recording_directory: ../electrosteel_pipe_detection_prod/var/caster_6/recordings
+    roi_path: ../electrosteel_pipe_detection_prod/config/casters/caster_6/rois.yaml
+  - id: caster7
+    display_name: Caster 7
+    active: false
+    database_directory: ../electrosteel_pipe_detection_prod/var/caster_7
+    database_file: caster_7_pipes.db
+    history_directory: ../electrosteel_pipe_detection_prod/var/caster_7/history
+    recording_directory: ../electrosteel_pipe_detection_prod/var/caster_7/recordings
+    roi_path: ../electrosteel_pipe_detection_prod/config/casters/caster_7/rois.yaml
+  - id: caster8
+    display_name: Caster 8
+    active: false
+    database_directory: ../electrosteel_pipe_detection_prod/var/caster_8
+    database_file: caster_8_pipes.db
+    history_directory: ../electrosteel_pipe_detection_prod/var/caster_8/history
+    recording_directory: ../electrosteel_pipe_detection_prod/var/caster_8/recordings
+    roi_path: ../electrosteel_pipe_detection_prod/config/casters/caster_8/rois.yaml
 
-outputs:
-  csv_dir: outputs/csv
 diagnosis:
   t_origin_gap_min: "00:01:30"
   t_origin_gap_max: "00:03:20"
-# loadcell = verify missing-loadcell rows only; all = verify every row.
-# Checked rows pass immediately when pipe_checkpoint=1; otherwise G2 must open inside the verification window.
-verified_pipes_mode: loadcell
-verified_pipes_gate_open_max_interval_seconds: 120   # gate open must be within 2 minutes from t_origin
-caster_number: 2
-gate2_closed_position_report:
-  interval_minutes: 10
-  recent_window_minutes: 10
-  min_avg_coverage_percent: 80
-  roi_name: roi_gate2_closed
-  gate2_class_id: 3
-  source_resolution:
-    width: 1310
-    height: 608
-  # false = email only when the detected-Gate2-area-inside-ROI percent is below threshold.
-  # min_avg_coverage_percent applies to average detected Gate2 area inside roi_gate2_closed.
-  # true = also email when no YOLO samples exist in the interval.
-  alert_on_no_samples: false
-  send_email: true
+
+verification:
+  mode: loadcell
+  gate_open_max_interval_seconds: 120
+
 missing_loadcell_video:
   enabled: true
   pre_origin_seconds: 60
   clip_duration_seconds: 300
-  delete_after_upload: true
 
-jetson_storage_alert:
-  device: /dev/nvme0n1p1
-  threshold_percent: 90
-  recipient_mode: test
-
-video_retention:
-  keep_days: 5
-  include_overlay_videos: true
-verified_pipe_records_recipients:
-  - punithsai2001@gmail.com
-  - saikiran@electrosteel.com
-  - karikutisasikumar1301@gmail.com
-  - lsrao@electrosteel.com
-  - sivakumar.p@electrosteel.com
-  - dipquality@electrosteel.com
-  - swsdp@electrosteel.com
-  - info@v-optimai.com
-  - srinukotaru@electrosteel.com
+gate_coverage:
+  interval_minutes: 10
+  recent_window_minutes: 10
+  min_average_percent: 80
+  roi_name: roi_gate2_closed
+  gate2_class_id: 3
+  alert_on_no_samples: false
 
 email:
+  enabled: true
   smtp_server: smtp.gmail.com
-  send_csv_attachment: true   # true = attach CSV mail, false = skip attachment mail
   smtp_port: 587
   sender: innovate@v-optimai.com
-  # password: fmnjjxnjzwvfjyzc
   password_env: EMAIL_APP_PASSWORD
   recipients:
     - punithsai2001@gmail.com
     - info@v-optimai.com
-    - karikutisasikumar1301@gmail.com
-    - shyamsundar.pilli@v-optimai.com
-    - aakashpalina2019@gmail.com
-    - sridharcharanchekka@gmail.com
-  # Used by --test; production, diagnosis, and verified lists are not used in test mode.
   test_recipients:
     - karikutisasikumar1301@gmail.com
-  # Diagnosis CSV is sent only to this list. Keep [] to skip diagnosis email.
-  diagnosis_recipients: 
+  diagnosis_recipients:
     - punithsai2001@gmail.com
-    - karikutisasikumar1301@gmail.com
     - info@v-optimai.com
-    - shyamsundar.pilli@v-optimai.com
-    - aakashpalina2019@gmail.com
-    - sridharcharanchekka@gmail.com
-  
-video:
-  fps: 10
-  codec: mp4v
-  # auto reads the source app publish_overlay flag; true means history images already have overlays.
-  input_images_have_overlay: false
-  resolution:
-    width: auto
-    height: auto
-  output_dir: outputs/videos
-  overlay_output_dir: outputs/videos-overlay
+  verified_recipients:
+    - punithsai2001@gmail.com
+    - saikiran@electrosteel.com
+    - dipquality@electrosteel.com
 
-gdrive:
+upload:
+  enabled: true
+  executable: rclone
   remote: gdrive
-  base_path: "Electrosteel/Daily pipe recordings"
-  pipes_csv_dir: "Pipes_Data_Sheet"
-  videos_dir: "Pipe_count_caster2_vid"
+  base_path: Electrosteel/Daily pipe recordings
+  raw_csv_directory: Pipes_Data_Sheet
+  video_directory: Pipe_count_videos
+
+video_retention:
+  keep_days: 5
+  include_overlay_videos: true
+
+storage:
+  device: /dev/nvme0n1p1
+  alert_threshold_percent: 90
+
 logging:
-  level: INFO   # DEBUG / INFO / WARNING / ERROR
-
-casters:
-  defaults:
-    enabled: false
-    var_root: ../electrosteel_pipe_detection_prod/var
-    database_file: caster_{number}_pipes.db
-    history_dir: history
-    outputs:
-      csv_dir_template: outputs/{caster_id}/csv
-      video_dir_template: outputs/{caster_id}/videos
-      overlay_video_dir_template: outputs/{caster_id}/videos-overlay
-    gdrive:
-      pipes_csv_dir_template: Pipes_Data_Sheet/{caster_id}
-      videos_dir_template: Pipe_count_{caster_id}_vid
-
-  items:
-    - id: caster1
-      number: 1
-      enabled: false
-      var_dir: ../electrosteel_pipe_detection_prod/var/caster_1
-      rois:
-        path: ../electrosteel_pipe_detection_prod/config/casters/caster_1/rois.yaml
-
-    - id: caster2
-      number: 2
-      enabled: true
-      var_dir: ../electrosteel_pipe_detection_prod/var/caster_2
-      rois:
-        path: ../electrosteel_pipe_detection_prod/config/casters/caster_2/rois.yaml
-
-    - id: caster3
-      number: 3
-      enabled: true
-      var_dir: ../electrosteel_pipe_detection_prod/var/caster_3
-      rois:
-        path: ../electrosteel_pipe_detection_prod/config/casters/caster_3/rois.yaml
-
-    - id: caster4
-      number: 4
-      enabled: false
-      var_dir: ../electrosteel_pipe_detection_prod/var/caster_4
-      rois:
-        path: ../electrosteel_pipe_detection_prod/config/casters/caster_4/rois.yaml
-
-    - id: caster5
-      number: 5
-      enabled: false
-      var_dir: ../electrosteel_pipe_detection_prod/var/caster_5
-      rois:
-        path: ../electrosteel_pipe_detection_prod/config/casters/caster_5/rois.yaml
-
-    - id: caster6
-      number: 6
-      enabled: false
-      var_dir: ../electrosteel_pipe_detection_prod/var/caster_6
-      rois:
-        path: ../electrosteel_pipe_detection_prod/config/casters/caster_6/rois.yaml
-
-    - id: caster7
-      number: 7
-      enabled: false
-      var_dir: ../electrosteel_pipe_detection_prod/var/caster_7
-      rois:
-        path: ../electrosteel_pipe_detection_prod/config/casters/caster_7/rois.yaml
-
-    - id: caster8
-      number: 8
-      enabled: false
-      var_dir: ../electrosteel_pipe_detection_prod/var/caster_8
-      rois:
-        path: ../electrosteel_pipe_detection_prod/config/casters/caster_8/rois.yaml
+  level: INFO
