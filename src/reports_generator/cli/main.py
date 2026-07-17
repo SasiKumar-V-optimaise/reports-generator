@@ -1,5 +1,6 @@
 import argparse
 from datetime import date, datetime
+
 from reports_generator.application.models import WorkflowRequest
 from reports_generator.bootstrap import create_application
 from reports_generator.domain.shifts.models import Shift
@@ -36,6 +37,16 @@ def run_report(args: argparse.Namespace) -> int:
     r = wf.run(
         WorkflowRequest(_date(args.production_date), Shift.parse(args.shift), ids, args.test)
     )
+    for caster in r.caster_results:
+        for stage in caster.stages:
+            status = "OK" if stage.success else "FAILED"
+            print(f"{caster.caster_id} | {stage.stage} | {status}")
+            for artifact in stage.artifacts:
+                print(f"  artifact: {artifact.path}")
+            for warning in stage.warnings:
+                print(f"  warning: {warning}")
+            for error in stage.errors:
+                print(f"  error: {error}")
     print(r.success)
     return 0 if r.success else 1
 

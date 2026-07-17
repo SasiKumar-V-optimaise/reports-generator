@@ -27,7 +27,29 @@ PYTHONPATH=src python -m reports_generator.cli.main --help
 PYTHONPATH=src python -m reports_generator.cli.main report --date 2026-07-14 --shift A
 ```
 
+### Safe local end-to-end run
+
+~~~bash
+uv run reports-generator report \
+  --date 2026-07-15 \
+  --shift C \
+  --casters caster2 caster3 \
+  --test
+~~~
+
+This reads the configured caster SQLite databases and history images, applies
+verification and diagnosis rules, writes CSV/XLSX reports, generates MP4
+videos, and saves workflow state. External uploads, email notifications, and
+source cleanup are skipped in test mode. The CLI prints every stage, artifact,
+warning, and error before the final True or False result.
+
 ## Development
+
+Run the CLI-level local workflow test with:
+
+~~~bash
+uv run pytest tests/integration/test_workflow_e2e.py -v
+~~~
 
 Run tests with `PYTHONPATH=src uv run pytest`. Use Ruff and mypy for linting and type checking.
 
