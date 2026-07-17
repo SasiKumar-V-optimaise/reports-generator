@@ -818,12 +818,18 @@ class ShiftWorkflow:
     def _export_verified_pipes_report(self, run: ShiftRun, result: CasterRunResult):
         cfg = result.caster.cfg
         verified_exporter = VerifiedPipeExporter(cfg=cfg, caster=result.caster)
+        window_kwargs = (
+            {"start_time": run.start_time, "stop_time": run.stop_time}
+            if run.is_custom_window
+            else {}
+        )
         verified_path_obj, verified_summary = backoff_retry(
             lambda: verified_exporter.export(
                 run.date_str,
                 run.shift_name,
                 result.csv_path,
                 mode=self._verified_pipes_mode(cfg),
+                **window_kwargs,
             ),
             what=f"{result.caster.id} verified pipes CSV export",
         )
@@ -900,14 +906,23 @@ class ShiftWorkflow:
                 "started_at": datetime.now().isoformat(timespec="seconds"),
                 "status": "raw_verified_running",
             })
+            if run.is_custom_window:
+                state["window_mode"] = "custom"
+                state["start_time"] = run.start_time
+                state["stop_time"] = run.stop_time
             result.state = state
             self._save_state(run, caster, state)
             logger.info("Raw/verified phase start | caster=%s | date=%s | shift=%s", caster.id, run.date_str, run.shift_name)
 
             try:
                 exporter = PipeExporter(cfg=caster.cfg, caster=caster)
+                window_kwargs = (
+                    {"start_time": run.start_time, "stop_time": run.stop_time}
+                    if run.is_custom_window
+                    else {}
+                )
                 csv_path_obj, pipe_count = backoff_retry(
-                    lambda: exporter.export(run.date_str, run.shift_name),
+                    lambda: exporter.export(run.date_str, run.shift_name, **window_kwargs),
                     what=f"{caster.id} CSV export",
                 )
                 result.csv_path = str(csv_path_obj)
@@ -1278,6 +1293,8 @@ class ShiftWorkflow:
                 f"  gdrive.videos_dir: {cfg.get('gdrive', {}).get('videos_dir')}",
             ])
         return "\n".join(lines)
+
+
 
 
 

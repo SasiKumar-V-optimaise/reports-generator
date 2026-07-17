@@ -69,6 +69,14 @@ Verified CSV only:
 uv run python -m cli.report_workflow --date 13-07-2026 --shift C --verified-only --caster caster2
 ```
 
+Verified CSV for a custom time window:
+
+```bash
+uv run python -m cli.report_workflow --date 13-07-2026 --start 01:00 --stop 13:00 --verified-only --test --caster caster2
+```
+
+Use `--start` and `--stop` only with `--verified-only`; do not combine them with `--shift`.
+
 Diagnosis XLSX only:
 
 ```bash
@@ -332,3 +340,4 @@ Unexpected cleanup:
 
 - Cleanup runs only after full-shift video success.
 - Check the caster state JSON in `outputs/state` for `normal_shift_source_cleanup`.
+

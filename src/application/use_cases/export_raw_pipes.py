@@ -146,7 +146,33 @@ class PipeExporter:
 
         return min_seconds, max_seconds
 
-    def _shift_window(self, date_str: str, shift: str):
+    @staticmethod
+    def _parse_window_datetime(date_str: str, time_value: str, arg_name: str) -> datetime:
+        text = str(time_value).strip()
+        for fmt in ("%d-%m-%Y %H:%M:%S", "%d-%m-%Y %H:%M"):
+            try:
+                return datetime.strptime(f"{date_str} {text}", fmt)
+            except ValueError:
+                continue
+        raise ValueError(f"{arg_name} must be in HH:MM or HH:MM:SS format")
+
+    def _shift_window(
+        self,
+        date_str: str,
+        shift: str,
+        *,
+        start_time: str | None = None,
+        stop_time: str | None = None,
+    ):
+        if bool(start_time) != bool(stop_time):
+            raise ValueError("start_time and stop_time must be used together")
+        if start_time and stop_time:
+            start = self._parse_window_datetime(date_str, start_time, "--start")
+            end = self._parse_window_datetime(date_str, stop_time, "--stop")
+            if end <= start:
+                end += timedelta(days=1)
+            return int(start.timestamp()), int(end.timestamp()), start, end
+
         shift = shift.lower()
         if shift not in self.shifts:
             raise ValueError(f"Invalid shift: {shift}")
@@ -156,12 +182,11 @@ class PipeExporter:
         start = datetime.strptime(f"{date_str} {start_s}", "%d-%m-%Y %H:%M")
         end = datetime.strptime(f"{date_str} {end_s}", "%d-%m-%Y %H:%M")
 
-        # Overnight shift (e.g., 22:00 â†’ 06:00)
+        # Overnight shift (for example, 22:00 to 06:00)
         if end <= start:
             end += timedelta(days=1)
 
         return int(start.timestamp()), int(end.timestamp()), start, end
-
     @staticmethod
     def _table_columns(con: sqlite3.Connection, table_name: str) -> set[str]:
         rows = con.execute(f"PRAGMA table_info({table_name})").fetchall()
@@ -192,8 +217,8 @@ class PipeExporter:
         ORDER BY t_origin DESC;
         """
 
-    def _fetch_shift_df(self, date_str: str, shift: str):
-        start_ts, end_ts, start_dt, end_dt = self._shift_window(date_str, shift)
+    def _fetch_shift_df(self, date_str: str, shift: str, *, start_time: str | None = None, stop_time: str | None = None):
+        start_ts, end_ts, start_dt, end_dt = self._shift_window(date_str, shift, start_time=start_time, stop_time=stop_time)
 
         with sqlite3.connect(self.db_path) as con:
             query = self._build_query(self._table_columns(con, "pipes"))
@@ -479,10 +504,10 @@ class PipeExporter:
             xlsx.writestr("xl/styles.xml", styles_xml)
             xlsx.writestr("xl/worksheets/sheet1.xml", worksheet_xml)
 
-    def export_diagnosis(self, date_str: str, shift: str):
+    def export_diagnosis(self, date_str: str, shift: str, *, start_time: str | None = None, stop_time: str | None = None):
         logger.info("Fetching pipe diagnosis data (date=%s, shift=%s)...", date_str, shift)
 
-        df, start_dt, end_dt = self._fetch_shift_df(date_str, shift)
+        df, start_dt, end_dt = self._fetch_shift_df(date_str, shift, start_time=start_time, stop_time=stop_time)
         diagnosis_df = self._build_diagnosis_df(df)
 
         timestamp = datetime.now().strftime("%H%M%S")
@@ -513,10 +538,10 @@ class PipeExporter:
         )
         return out_path, summary
 
-    def export(self, date_str: str, shift: str):
+    def export(self, date_str: str, shift: str, *, start_time: str | None = None, stop_time: str | None = None):
         logger.info("Fetching pipe data (date=%s, shift=%s)...", date_str, shift)
 
-        df, start_dt, end_dt = self._fetch_shift_df(date_str, shift)
+        df, start_dt, end_dt = self._fetch_shift_df(date_str, shift, start_time=start_time, stop_time=stop_time)
 
         # ---------- FILE NAME ----------
         timestamp = datetime.now().strftime("%H%M%S")
@@ -532,6 +557,8 @@ class PipeExporter:
             shift.upper(), start_dt, end_dt, pipe_count, out_path
         )
         return out_path, pipe_count
+
+
 
 
 

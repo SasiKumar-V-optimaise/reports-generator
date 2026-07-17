@@ -107,7 +107,33 @@ class VerifiedPipeExporter:
             default_seconds=self.DEFAULT_GATE_OPEN_MAX_INTERVAL_SECONDS,
         )
 
-    def _shift_window(self, date_str: str, shift: str):
+    @staticmethod
+    def _parse_window_datetime(date_str: str, time_value: str, arg_name: str) -> datetime:
+        text = str(time_value).strip()
+        for fmt in ("%d-%m-%Y %H:%M:%S", "%d-%m-%Y %H:%M"):
+            try:
+                return datetime.strptime(f"{date_str} {text}", fmt)
+            except ValueError:
+                continue
+        raise ValueError(f"{arg_name} must be in HH:MM or HH:MM:SS format")
+
+    def _shift_window(
+        self,
+        date_str: str,
+        shift: str,
+        *,
+        start_time: str | None = None,
+        stop_time: str | None = None,
+    ):
+        if bool(start_time) != bool(stop_time):
+            raise ValueError("start_time and stop_time must be used together")
+        if start_time and stop_time:
+            start = self._parse_window_datetime(date_str, start_time, "--start")
+            end = self._parse_window_datetime(date_str, stop_time, "--stop")
+            if end <= start:
+                end += timedelta(days=1)
+            return int(start.timestamp()), int(end.timestamp()), start, end
+
         shift_key = self._normalize_shift_key(shift)
         if shift_key not in self.shifts:
             raise ValueError(f"Invalid shift: {shift}")
@@ -121,7 +147,6 @@ class VerifiedPipeExporter:
             end += timedelta(days=1)
 
         return int(start.timestamp()), int(end.timestamp()), start, end
-
     @staticmethod
     def _table_exists(con: sqlite3.Connection, table_name: str) -> bool:
         row = con.execute(
@@ -159,8 +184,8 @@ class VerifiedPipeExporter:
         ORDER BY t_gate2_open;
         """
 
-    def _fetch_gate_events_df(self, date_str: str, shift: str) -> tuple[pd.DataFrame, datetime]:
-        start_ts, end_ts, _start_dt, end_dt = self._shift_window(date_str, shift)
+    def _fetch_gate_events_df(self, date_str: str, shift: str, *, start_time: str | None = None, stop_time: str | None = None) -> tuple[pd.DataFrame, datetime]:
+        start_ts, end_ts, _start_dt, end_dt = self._shift_window(date_str, shift, start_time=start_time, stop_time=stop_time)
 
         if not self.db_path.exists():
             raise FileNotFoundError(f"Database not found: {self.db_path}")
@@ -463,6 +488,8 @@ class VerifiedPipeExporter:
         pipes_csv_path: str | Path,
         *,
         mode: str | None = None,
+        start_time: str | None = None,
+        stop_time: str | None = None,
     ) -> tuple[Path, dict]:
         configured_mode = (
             self.cfg.get("verified_pipes_mode")
@@ -471,7 +498,7 @@ class VerifiedPipeExporter:
         )
         mode = self._normalize_mode(mode or configured_mode)
 
-        gate_df, shift_end = self._fetch_gate_events_df(date_str, shift)
+        gate_df, shift_end = self._fetch_gate_events_df(date_str, shift, start_time=start_time, stop_time=stop_time)
         return self.export_from_dataframes(
             date_str,
             shift,
@@ -489,6 +516,8 @@ class VerifiedPipeExporter:
         gate_events_csv_path: str | Path,
         *,
         mode: str | None = None,
+        start_time: str | None = None,
+        stop_time: str | None = None,
     ) -> tuple[Path, dict]:
         configured_mode = (
             self.cfg.get("verified_pipes_mode")
@@ -496,7 +525,7 @@ class VerifiedPipeExporter:
             or "loadcell"
         )
         mode = self._normalize_mode(mode or configured_mode)
-        _start_ts, _end_ts, _start_dt, shift_end = self._shift_window(date_str, shift)
+        _start_ts, _end_ts, _start_dt, shift_end = self._shift_window(date_str, shift, start_time=start_time, stop_time=stop_time)
 
         return self.export_from_dataframes(
             date_str,
@@ -595,6 +624,9 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+
 
 
 

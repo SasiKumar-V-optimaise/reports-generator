@@ -123,3 +123,54 @@ class ArchitectureOutputPathTest(TestCase):
             self.assertTrue(failing_csv.exists())
             self.assertNotIn("csv_deleted_after_upload", wf.results[caster.id].state)
 
+
+    def test_verified_only_custom_window_passes_start_stop_to_exporters(self):
+        calls = {}
+        tmp_root = None
+
+        class FakePipeExporter:
+            def __init__(self, cfg=None, caster=None):
+                self.caster = caster
+
+            def export(self, date_str, shift, **kwargs):
+                calls["raw"] = (date_str, shift, kwargs)
+                path = tmp_root / "raw.csv"
+                path.write_text("raw", encoding="utf-8")
+                return path, 3
+
+        class FakeVerifiedExporter:
+            def __init__(self, cfg=None, caster=None):
+                self.caster = caster
+
+            def export(self, date_str, shift, csv_path, mode=None, **kwargs):
+                calls["verified"] = (date_str, shift, Path(csv_path).name, mode, kwargs)
+                path = tmp_root / "verified.csv"
+                path.write_text("verified", encoding="utf-8")
+                return path, {"verified_count": 3, "removed_count": 0, "loadcell_missing_records": []}
+
+        with (
+            TemporaryDirectory() as tmp,
+            patch.object(report_workflow, "PipeExporter", FakePipeExporter),
+            patch.object(report_workflow, "VerifiedPipeExporter", FakeVerifiedExporter),
+        ):
+            tmp_root = Path(tmp)
+            wf = ShiftWorkflow(cfg=_cfg(tmp_root), selected_ids=["caster4"])
+            run = ShiftRun("13-07-2026", "custom_0100_1300", "01:00", "13:00")
+            wf.phase_raw_and_verified(wf.casters, run, require_raw_email_for_verified=False)
+
+        self.assertEqual(calls["raw"], (
+            "13-07-2026",
+            "custom_0100_1300",
+            {"start_time": "01:00", "stop_time": "13:00"},
+        ))
+        self.assertEqual(calls["verified"], (
+            "13-07-2026",
+            "custom_0100_1300",
+            "raw.csv",
+            "loadcell",
+            {"start_time": "01:00", "stop_time": "13:00"},
+        ))
+        state = wf.results["caster4"].state
+        self.assertEqual(state["window_mode"], "custom")
+        self.assertEqual(state["start_time"], "01:00")
+        self.assertEqual(state["stop_time"], "13:00")

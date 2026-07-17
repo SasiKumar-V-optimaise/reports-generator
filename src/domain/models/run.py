@@ -11,6 +11,18 @@ from src.domain.models.caster import CasterConfig
 class ShiftRun:
     date_str: str
     shift_name: str
+    start_time: str | None = None
+    stop_time: str | None = None
+
+    @property
+    def is_custom_window(self) -> bool:
+        return bool(self.start_time and self.stop_time)
+
+    @property
+    def display_name(self) -> str:
+        if self.is_custom_window:
+            return f"Custom {self.start_time}-{self.stop_time}"
+        return self.shift_name
 
 
 @dataclass(frozen=True)
@@ -75,5 +87,6 @@ class CasterRunResult:
     missing_overlay_link: str | None = None
     missing_normal_link: str | None = None
     full_shift_video_path: str | None = None
+
 
 
