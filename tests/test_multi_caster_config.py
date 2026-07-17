@@ -1,4 +1,4 @@
-import sqlite3
+﻿import sqlite3
 from datetime import datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -249,7 +249,7 @@ class MultiCasterConfigTest(TestCase):
         caster = resolve_enabled_casters(_base_cfg(), ["caster2"])[0]
         generator = ShiftVideoGenerator("02-07-2026", "A", cfg=caster.cfg, caster=caster)
 
-        self.assertTrue(str(generator.image_root).endswith(r"producer\var\caster2\history"))
+        self.assertTrue(generator.image_root.as_posix().endswith("producer/var/caster2/history"))
         self.assertEqual(generator.output_path.name, "02-07-2026_caster2_shift_a.mp4")
 
     def test_gate2_report_uses_caster_specific_history_and_rois(self):
@@ -700,3 +700,4 @@ class WorkflowOrderingTest(TestCase):
                 "Verified Pipe Production Report - 02-07-2026 - Shift A",
             ],
         )
+

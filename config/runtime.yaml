@@ -1,4 +1,4 @@
-history:
+﻿history:
   shifts:
     - name: Shift_A
       start: "06:00"
@@ -19,7 +19,9 @@ rois:
     height: 1080
 
 outputs:
-  csv_dir: outputs/csv
+  base_dir: outputs
+  logs_dir: outputs/logs
+  state_dir: outputs/state
 diagnosis:
   t_origin_gap_min: "00:01:30"
   t_origin_gap_max: "00:03:20"
@@ -102,7 +104,7 @@ video:
     width: auto
     height: auto
   output_dir: outputs/videos
-  overlay_output_dir: outputs/videos-overlay
+  overlay_output_dir: outputs/overlay-videos
 
 gdrive:
   remote: gdrive
@@ -119,9 +121,11 @@ casters:
     database_file: caster_{number}_pipes.db
     history_dir: history
     outputs:
-      csv_dir_template: outputs/{caster_id}/csv
+      raw_csv_dir_template: outputs/{caster_id}/raw-csv
+      verified_csv_dir_template: outputs/{caster_id}/verified-csv
+      diagnosis_dir_template: outputs/{caster_id}/verified-csv
       video_dir_template: outputs/{caster_id}/videos
-      overlay_video_dir_template: outputs/{caster_id}/videos-overlay
+      overlay_video_dir_template: outputs/{caster_id}/overlay-videos
     gdrive:
       pipes_csv_dir_template: Pipes_Data_Sheet/{caster_id}
       videos_dir_template: Pipe_count_{caster_id}_vid
@@ -182,3 +186,5 @@ casters:
       var_dir: ../electrosteel_pipe_detection_prod/var/caster_8
       rois:
         path: ../electrosteel_pipe_detection_prod/config/casters/caster_8/rois.yaml
+
+

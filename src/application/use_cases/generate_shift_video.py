@@ -1,0 +1,370 @@
+﻿import cv2
+import csv
+import glob
+import time
+import logging
+from bisect import bisect_right
+from pathlib import Path
+from datetime import datetime, timedelta
+
+from src.infrastructure.config.runtime_config_loader import load_runtime_config
+from src.infrastructure.config.caster_config_resolver import caster_label, resolve_enabled_casters
+
+
+logger = logging.getLogger(__name__)
+
+
+class ShiftVideoGenerator:
+    """
+    Production-grade shift video generator
+    - YAML driven
+    - logging based
+    - timestamp range reporting
+    """
+
+    # ---------------- INIT ----------------
+    def __init__(
+        self,
+        date_str: str,
+        shift: str,
+        cfg: dict | None = None,
+        caster=None,
+        verified_report_path: str | Path | None = None,
+    ):
+
+        self.date_str = date_str
+        self.shift = shift.upper()
+        self.date_obj = datetime.strptime(date_str, "%d-%m-%Y")
+
+        self.root = Path(__file__).resolve().parents[3]
+        cfg = cfg or load_runtime_config()
+        if (
+            caster is None
+            and not (cfg.get("history") or {}).get("image_root")
+            and isinstance(cfg.get("casters"), dict)
+        ):
+            caster = resolve_enabled_casters(cfg)[0]
+            cfg = caster.cfg
+        self.caster = caster
+        self.caster_file_token = getattr(caster, "file_token", None)
+        self.caster_log_label = caster_label(caster, cfg)
+        self.verified_report_path = verified_report_path
+
+        self.video_cfg = cfg["video"]
+        self.image_root = (self.root / cfg["history"]["image_root"]).resolve()
+
+        # Setup resolution config (clean version without mode)
+        self.res_cfg = self.video_cfg.get("resolution", {})
+
+        self.output_dir = self.root / self.video_cfg["output_dir"]
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+
+        caster_part = f"_{self.caster_file_token}" if self.caster_file_token else ""
+        self.output_path = self.output_dir / f"{date_str}{caster_part}_shift_{self.shift.lower()}.mp4"
+
+        logger.info(
+            "VideoGenerator initialized | caster=%s | date=%s | shift=%s",
+            self.caster_log_label, self.date_str, self.shift
+        )
+
+    # ---------------- GENERATE ----------------
+    def generate(self):
+
+        images = self._collect_images()
+        self.source_image_paths = images
+        if not images:
+            raise RuntimeError("No images found for shift")
+
+        start_ts = self._timestamp_from_name(images[0])
+        end_ts = self._timestamp_from_name(images[-1])
+
+        logger.info(
+            "Generating video | caster=%s | shift=%s | images=%s | range=%s â†’ %s",
+            self.caster_log_label, self.shift, len(images), start_ts, end_ts
+        )
+
+        first = cv2.imread(images[0])
+        if first is None:
+            raise RuntimeError("Failed to read first image")
+
+        h, w = first.shape[:2]
+        w, h = self._resolve_resolution(w, h)
+
+        fps_cfg = self.video_cfg.get("fps", 10)
+
+        logger.info("Resolution=%sx%s | FPS=%s", w, h, fps_cfg)
+
+        writer = cv2.VideoWriter(
+            str(self.output_path),
+            cv2.VideoWriter_fourcc(*"mp4v"),
+            fps_cfg,
+            (w, h),
+        )
+        if not writer.isOpened():
+            raise RuntimeError(f"Failed to open video writer: {self.output_path}")
+
+        start_time = time.time()
+        total = len(images)
+        written = 0
+        pipe_timeline = self._load_verified_pipe_timeline()
+        pipe_origin_times = [entry[0] for entry in pipe_timeline]
+        pipe_counts = [entry[1] for entry in pipe_timeline]
+
+        for i, img in enumerate(images, 1):
+
+            frame = cv2.imread(img)
+            if frame is None:
+                logger.warning("Skipping unreadable frame: %s", img)
+                continue
+
+            if (frame.shape[1], frame.shape[0]) != (w, h):
+                frame = cv2.resize(frame, (w, h))
+
+            ts = self._timestamp_from_name(img)
+            if ts:
+                cv2.putText(
+                    frame, ts, (20, h - 20),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.7, (0, 255, 255), 2, cv2.LINE_AA
+                )
+
+            pipe_count = self._pipe_count_for_frame(
+                self._datetime_from_name(img),
+                pipe_origin_times,
+                pipe_counts,
+            )
+            if pipe_count is not None:
+                self._draw_pipe_count(frame, pipe_count)
+
+            writer.write(frame)
+            written += 1
+
+        writer.release()
+
+        if written == 0:
+            raise RuntimeError("No readable frames were written to video")
+
+        total_time = int(time.time() - start_time)
+
+        logger.info(
+            "Video created successfully | caster=%s | path=%s | duration=%ss",
+            self.caster_log_label, self.output_path, total_time
+        )
+
+        return str(self.output_path)
+
+    # ---------------- RESOLUTION ----------------
+    def _resolve_resolution(self, w, h):
+
+        width = self.res_cfg.get("width", "auto")
+        height = self.res_cfg.get("height", "auto")
+
+        if width == "auto":
+            width = w
+        if height == "auto":
+            height = h
+
+        return int(width), int(height)
+
+    # ---------------- IMAGE COLLECTION ----------------
+    def _collect_images(self):
+
+        def day_images(d):
+            path = self.image_root / d.strftime("%Y_%m_%d") / f"Shift_{self.shift}_img"
+            return sorted(glob.glob(str(path / "*.jpeg")))
+
+        if self.shift in ["A", "B"]:
+            return day_images(self.date_obj)
+
+        # Shift C crosses midnight
+        next_day = self.date_obj + timedelta(days=1)
+
+        today = [i for i in day_images(self.date_obj) if self._hour(i) >= 22]
+        nxt = [i for i in day_images(next_day) if self._hour(i) < 6]
+
+        return sorted(today + nxt)
+
+    # ---------------- TIMESTAMP ----------------
+    @staticmethod
+    def _timestamp_from_name(path):
+        try:
+            name = Path(path).stem.split("_")[-1]
+            dd, mm, yyyy, hh, mi, ss = name.split("-")[:6]
+            return f"{yyyy}-{mm}-{dd} {hh}:{mi}:{ss}"
+        except Exception:
+            return None
+
+    @staticmethod
+    def _datetime_from_name(path):
+        try:
+            name = Path(path).stem.split("_")[-1]
+            dd, mm, yyyy, hh, mi, ss = name.split("-")[:6]
+            return datetime(int(yyyy), int(mm), int(dd), int(hh), int(mi), int(ss))
+        except (IndexError, ValueError):
+            return None
+
+    def _load_verified_pipe_timeline(self):
+        path = self._resolved_verified_report_path()
+        if path is None:
+            return []
+        if not path.exists():
+            logger.warning(
+                "Verified pipe report not found; continuing without pipe count overlay | path=%s",
+                path,
+            )
+            return []
+
+        entries = []
+        try:
+            with open(path, newline="", encoding="utf-8-sig") as handle:
+                reader = csv.DictReader(handle)
+                columns = {str(name).strip().lower(): name for name in (reader.fieldnames or [])}
+                pipe_column = columns.get("pipe number")
+                origin_column = columns.get("origin time")
+                if not pipe_column or not origin_column:
+                    logger.warning(
+                        "Verified pipe report missing required columns; continuing without pipe count overlay | path=%s",
+                        path,
+                    )
+                    return []
+
+                for row in reader:
+                    pipe_number = self._parse_pipe_number(row.get(pipe_column))
+                    origin_time = self._parse_verified_origin_time(row.get(origin_column))
+                    if pipe_number is None or origin_time is None:
+                        continue
+                    entries.append((origin_time, pipe_number))
+        except (OSError, csv.Error) as exc:
+            logger.warning(
+                "Unable to read verified pipe report; continuing without pipe count overlay | path=%s | error=%s",
+                path,
+                exc,
+            )
+            return []
+
+        entries.sort(key=lambda entry: (entry[0], entry[1]))
+        return entries
+
+    def _resolved_verified_report_path(self):
+        if not self.verified_report_path:
+            return None
+        path = Path(self.verified_report_path)
+        return path if path.is_absolute() else (self.root / path).resolve()
+
+    @staticmethod
+    def _parse_pipe_number(value):
+        if value is None:
+            return None
+        text = str(value).strip()
+        if not text:
+            return None
+        try:
+            pipe_number = int(float(text))
+        except ValueError:
+            return None
+        return pipe_number if pipe_number > 0 else None
+
+    @staticmethod
+    def _parse_verified_origin_time(value):
+        if value is None:
+            return None
+        text = str(value).strip()
+        if not text:
+            return None
+
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%d-%m-%Y %H:%M:%S", "%d/%m/%Y %H:%M:%S"):
+            try:
+                return datetime.strptime(text, fmt)
+            except ValueError:
+                continue
+
+        try:
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        if parsed.tzinfo is not None:
+            parsed = parsed.astimezone().replace(tzinfo=None)
+        return parsed
+
+    @staticmethod
+    def _pipe_count_for_frame(frame_time, pipe_origin_times, pipe_counts):
+        if frame_time is None or not pipe_origin_times:
+            return None
+
+        index = bisect_right(pipe_origin_times, frame_time) - 1
+        if index < 0:
+            return None
+        return pipe_counts[index]
+
+    @staticmethod
+    def _draw_pipe_count(frame, pipe_count):
+        cv2.putText(
+            frame,
+            f"Pipe Count: {pipe_count}",
+            (20, 35),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.7,
+            (0, 255, 255),
+            2,
+            cv2.LINE_AA,
+        )
+
+    # ---------------- HOUR ----------------
+    @staticmethod
+    def _hour(path):
+        try:
+            return int(Path(path).stem.split("_")[-1].split("-")[3])
+        except Exception:
+            return -1
+
+
+def _normalize_shift_arg(value: str | None) -> str:
+    if not value:
+        raise ValueError("Shift is required. Use --shift A/B/C or positional shift_a/shift_b/shift_c")
+    text = str(value).strip()
+    if text.lower().startswith("shift_"):
+        text = text.split("_", 1)[1]
+    text = text.upper()
+    if text not in {"A", "B", "C"}:
+        raise ValueError("Invalid shift. Use A, B, C, shift_a, shift_b, or shift_c")
+    return text
+
+
+# ---------------- CLI ----------------
+if __name__ == "__main__":
+    import argparse
+    import logging
+
+    cfg = load_runtime_config()
+
+    level_name = (cfg.get("logging", {}) or {}).get("level", "INFO")
+    logging.basicConfig(
+        level=getattr(logging, level_name.upper(), logging.INFO),
+        format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+    )
+
+    parser = argparse.ArgumentParser(description="Generate normal full-shift video")
+    parser.add_argument("--date", required=True, help="DD-MM-YYYY")
+    parser.add_argument("shift", nargs="?", help="shift_a/shift_b/shift_c, kept for backward compatibility")
+    parser.add_argument("--shift", dest="shift_opt", help="A/B/C or Shift_A/Shift_B/Shift_C")
+    parser.add_argument("--caster", help="Single caster id, for example caster1")
+    parser.add_argument("--all-casters", action="store_true", help="Generate for every enabled caster")
+
+    args = parser.parse_args()
+    if args.shift and args.shift_opt:
+        parser.error("Use either positional shift or --shift, not both")
+    if args.caster and args.all_casters:
+        parser.error("Use either --caster or --all-casters, not both")
+
+    try:
+        shift_letter = _normalize_shift_arg(args.shift_opt or args.shift)
+    except ValueError as exc:
+        parser.error(str(exc))
+
+    selected_ids = None if args.all_casters else ([args.caster] if args.caster else None)
+    casters = resolve_enabled_casters(cfg, selected_ids)
+    for caster in casters:
+        ShiftVideoGenerator(args.date, shift_letter, cfg=caster.cfg, caster=caster).generate()
+
+
+

@@ -1,12 +1,12 @@
-from pathlib import Path
-import yaml
+﻿from __future__ import annotations
 
-ROOT = Path(__file__).resolve().parents[2]
+import importlib
+import runpy
+import sys
 
-def load_runtime_config() -> dict:
-    with open(ROOT / "config" / "runtime.yaml") as f:
-        return yaml.safe_load(f) or {}
+_impl = importlib.import_module("src.infrastructure.config.runtime_config_loader")
 
-
-def load_config():
-    return load_runtime_config()
+if __name__ == "__main__":
+    runpy.run_module(_impl.__name__, run_name="__main__")
+else:
+    sys.modules[__name__] = _impl
