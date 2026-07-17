@@ -23,7 +23,7 @@ def create_application(project_root: Path | None = None, caster_ids=()):
         report_service=LocalReportService(config, paths),
         video_service=LocalVideoService(config, paths),
         upload_service=LocalUploadService(),
-        notification_service=LocalNotificationService(),
+        notification_service=LocalNotificationService(config),
         cleanup_service=LocalCleanupService(),
         state_store=JsonStateStore(config.paths.state_root),
     )

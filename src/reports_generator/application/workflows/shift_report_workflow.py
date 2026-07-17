@@ -49,17 +49,25 @@ class ShiftReportWorkflow:
         results = []
         for cid in ids:
             ctx = _Context(request, cid)
-            for stage, method in (
-                ("report", self.report_service.generate),
-                ("video", self.video_service.generate),
-                ("upload", self.upload_service.upload),
-                ("notification", self.notification_service.notify),
-            ):
+            stages = (
+                (
+                    ("report", self.report_service.generate),
+                    ("notification", self.notification_service.notify),
+                )
+                if request.verified_only
+                else (
+                    ("report", self.report_service.generate),
+                    ("video", self.video_service.generate),
+                    ("upload", self.upload_service.upload),
+                    ("notification", self.notification_service.notify),
+                )
+            )
+            for stage, method in stages:
                 try:
                     ctx.stages.append(method(ctx))
                 except Exception as exc:
                     ctx.stages.append(StageResult(stage, False, errors=(str(exc),)))
-            if ctx.full_video_ok:
+            if not request.verified_only and ctx.full_video_ok:
                 try:
                     ctx.stages.append(self.cleanup_service.cleanup(ctx))
                 except Exception as exc:
@@ -74,7 +82,7 @@ class ShiftReportWorkflow:
             datetime.now(timezone.utc),
             workflow_id=f"{request.production_date.isoformat()}_{request.shift.value}",
         )
-        if self.state_store and hasattr(self.state_store, "save"):
+        if not request.verified_only and self.state_store and hasattr(self.state_store, "save"):
             self.state_store.save(out)
         return out
 

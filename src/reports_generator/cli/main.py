@@ -24,7 +24,11 @@ def build_parser() -> argparse.ArgumentParser:
         x.add_argument("--casters", nargs="+")
         x.add_argument("--all-casters", action="store_true")
         x.add_argument("--test", action="store_true")
-        x.add_argument("--verified-only", action="store_true")
+        x.add_argument(
+            "--verified-only",
+            action="store_true",
+            help="create and email only the verified CSV; skip video, diagnosis and upload",
+        )
         x.add_argument("--diagnosis-only", action="store_true")
         x.set_defaults(func=run_report)
     s.add_parser("storage").set_defaults(func=run_storage)
@@ -35,7 +39,13 @@ def run_report(args: argparse.Namespace) -> int:
     ids = tuple(args.casters or args.caster or ())
     _, wf = create_application(caster_ids=ids)
     r = wf.run(
-        WorkflowRequest(_date(args.production_date), Shift.parse(args.shift), ids, args.test)
+        WorkflowRequest(
+            production_date=_date(args.production_date),
+            shift=Shift.parse(args.shift),
+            caster_ids=ids,
+            test_mode=args.test,
+            verified_only=args.verified_only,
+        )
     )
     for caster in r.caster_results:
         for stage in caster.stages:

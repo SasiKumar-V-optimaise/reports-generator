@@ -12,6 +12,7 @@ class WorkflowRequest:
     shift: Shift
     caster_ids: tuple[str, ...] = ()
     test_mode: bool = False
+    verified_only: bool = False
 
 
 @dataclass(frozen=True, slots=True)

@@ -421,10 +421,15 @@ def _parse_email(value: Mapping[str, Any]) -> EmailConfig:
             value.get("password_env", "EMAIL_APP_PASSWORD"), "email.password_env"
         ),
         recipients=_string_tuple(value.get("recipients", ()), "email.recipients"),
+        enabled=_as_bool(value.get("enabled", True), "email.enabled"),
         test_recipients=_string_tuple(value.get("test_recipients", ()), "email.test_recipients"),
         diagnosis_recipients=_string_tuple(
             value.get("diagnosis_recipients", ()),
             "email.diagnosis_recipients",
+        ),
+        verified_recipients=_string_tuple(
+            value.get("verified_recipients", ()),
+            "email.verified_recipients",
         ),
         send_csv_attachment=_as_bool(
             value.get("send_csv_attachment", True), "email.send_csv_attachment"

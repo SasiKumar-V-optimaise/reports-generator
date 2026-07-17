@@ -83,6 +83,7 @@ def _write_config(root: Path) -> None:
             "recipients": [],
             "test_recipients": [],
             "diagnosis_recipients": [],
+            "verified_recipients": ["verified@example.test"],
         },
         "upload": {
             "enabled": False,
@@ -252,4 +253,50 @@ def test_cli_runs_real_local_workflow_without_external_side_effects(
         "caster-second",
     }
     assert all(path.is_file() for path in source_images)
+    clear_config_cache()
+
+
+def test_cli_verified_only_writes_one_csv_and_skips_other_stages(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    _write_config(tmp_path)
+    _write_database(tmp_path)
+    clear_config_cache()
+    monkeypatch.chdir(tmp_path)
+
+    exit_code = main(
+        [
+            "report",
+            "--date",
+            "2026-07-15",
+            "--shift",
+            "C",
+            "--casters",
+            "caster-test",
+            "--verified-only",
+            "--test",
+        ]
+    )
+
+    output = capsys.readouterr().out
+    assert exit_code == 0
+    assert "caster-test | report | OK" in output
+    assert "caster-test | notification | OK" in output
+    assert "verified report email skipped in --test mode" in output
+    assert "| video |" not in output
+    assert "| upload |" not in output
+    assert "| cleanup |" not in output
+
+    caster_root = tmp_path / "outputs" / "caster-test"
+    assert (
+        caster_root / "verified_csv" / "15-07-2026_shift_C_verified.csv"
+    ).is_file()
+    assert not (caster_root / "raw_csv" / "15-07-2026_shift_C.csv").exists()
+    assert not (
+        caster_root / "diagnosis" / "15-07-2026_shift_C_diagnosis.xlsx"
+    ).exists()
+    assert not (caster_root / "videos" / "15-07-2026_shift_C.mp4").exists()
+    assert not (tmp_path / "runtime" / "state" / "2026-07-15_C.json").exists()
     clear_config_cache()

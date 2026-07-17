@@ -43,6 +43,24 @@ videos, and saves workflow state. External uploads, email notifications, and
 source cleanup are skipped in test mode. The CLI prints every stage, artifact,
 warning, and error before the final True or False result.
 
+### Verified CSV and email only
+
+Set the SMTP password environment variable, then run without `--test`:
+
+~~~bash
+export EMAIL_APP_PASSWORD='your-gmail-app-password'
+uv run reports-generator report \
+  --date 17-07-2026 \
+  --shift A \
+  --casters caster2 caster3 \
+  --verified-only
+~~~
+
+This mode creates only each caster's verified CSV and emails it to
+`email.verified_recipients`. It skips raw CSV, diagnosis, video, upload,
+cleanup, and workflow-state output. Adding `--test` keeps the same local CSV
+behavior but deliberately skips email delivery.
+
 ## Development
 
 Run the CLI-level local workflow test with:

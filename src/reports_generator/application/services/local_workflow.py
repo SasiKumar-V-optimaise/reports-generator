@@ -1,13 +1,13 @@
 """Concrete local report and video stages used by the CLI composition root.
 
-External delivery and destructive cleanup intentionally remain outside these
-services. A `--test` run can therefore exercise production readers, domain
-rules, report writers, and video encoding without sending or deleting data.
+Verified-only runs can deliver their CSV through SMTP. A `--test` run still
+exercises local readers and writers without sending or deleting data.
 """
 
 from __future__ import annotations
 
 import csv
+import os
 from collections.abc import Iterable
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -50,6 +50,7 @@ from reports_generator.infrastructure.database import (
     SQLiteGateReader,
     SQLitePipeReader,
 )
+from reports_generator.infrastructure.email import MessageBuilder, SmtpSender
 from reports_generator.infrastructure.reports import CsvReportWriter, DiagnosisXlsxWriter
 from reports_generator.infrastructure.video import (
     Frame,
@@ -162,11 +163,12 @@ class LocalReportService:
         raw_path = self.paths.raw_csv_path(
             context.caster_id, request.production_date, request.shift
         )
-        self.csv_writer.write(
-            raw_path,
-            (record.as_dict() for record in raw_records),
-            fieldnames=PIPE_COLUMNS,
-        )
+        if not request.verified_only:
+            self.csv_writer.write(
+                raw_path,
+                (record.as_dict() for record in raw_records),
+                fieldnames=PIPE_COLUMNS,
+            )
 
         gate_result = SQLiteGateReader(caster.database_path).read(
             start_timestamp, end_timestamp
@@ -215,6 +217,21 @@ class LocalReportService:
             fieldnames=verified_columns,
         )
 
+        warnings: list[str] = []
+        if not raw_records:
+            warnings.append("no pipe records were found in the selected shift")
+        if gate_result.source_table is None:
+            warnings.append("no compatible gate event table was found; verification used no gates")
+        if request.verified_only:
+            return StageResult(
+                "report",
+                True,
+                artifacts=(
+                    Artifact(ArtifactType.VERIFIED_CSV, context.caster_id, verified_path),
+                ),
+                warnings=tuple(warnings),
+            )
+
         raw_by_domain_id = {
             id(domain_record): raw_record
             for domain_record, raw_record in zip(domain_records, raw_records)
@@ -262,12 +279,6 @@ class LocalReportService:
             diagnosis_rows,
             columns=diagnosis_columns,
         )
-
-        warnings: list[str] = []
-        if not raw_records:
-            warnings.append("no pipe records were found in the selected shift")
-        if gate_result.source_table is None:
-            warnings.append("no compatible gate event table was found; verification used no gates")
 
         return StageResult(
             "report",
@@ -448,13 +459,98 @@ class LocalUploadService:
 
 
 class LocalNotificationService:
+    def __init__(self, config: AppConfig, sender=None) -> None:
+        self.config = config
+        self.sender = sender
+
     def notify(self, context: WorkflowContext) -> StageResult:
-        reason = (
-            "external notification skipped in --test mode"
-            if context.request.test_mode
-            else "external notification adapter is not configured"
+        request = context.request
+        if not request.verified_only:
+            reason = (
+                "external notification skipped in --test mode"
+                if request.test_mode
+                else "external notification adapter is not configured"
+            )
+            return StageResult("notification", True, warnings=(reason,))
+        if request.test_mode:
+            return StageResult(
+                "notification",
+                True,
+                warnings=("verified report email skipped in --test mode",),
+            )
+
+        email = self.config.email
+        if not email.enabled:
+            return StageResult(
+                "notification",
+                False,
+                errors=("email.enabled must be true for --verified-only delivery",),
+            )
+        recipients = email.verified_recipients or email.recipients
+        if not recipients:
+            return StageResult(
+                "notification",
+                False,
+                errors=("email.verified_recipients must contain at least one address",),
+            )
+        verified_paths = tuple(
+            artifact.path
+            for stage in context.stages
+            for artifact in stage.artifacts
+            if artifact.artifact_type is ArtifactType.VERIFIED_CSV
+            and artifact.path.is_file()
         )
-        return StageResult("notification", True, warnings=(reason,))
+        if not verified_paths:
+            return StageResult(
+                "notification",
+                False,
+                errors=("verified CSV was not created; email was not sent",),
+            )
+
+        caster = self.config.caster(context.caster_id)
+        production_date = request.production_date.strftime("%d-%m-%Y")
+        message = MessageBuilder().build(
+            f"Verified pipe report - {caster.display_name} - {production_date} shift {request.shift.value}",
+            (
+                f"Attached is the verified pipe report for {caster.display_name}, "
+                f"{production_date}, shift {request.shift.value}."
+            ),
+            sender=email.sender,
+            recipients=recipients,
+            attachments=verified_paths,
+        )
+        sender = self.sender
+        if sender is None:
+            password = os.environ.get(email.password_env)
+            if not password:
+                return StageResult(
+                    "notification",
+                    False,
+                    errors=(
+                        f"environment variable {email.password_env} is required to send email",
+                    ),
+                )
+            sender = SmtpSender(
+                email.smtp_host,
+                email.smtp_port,
+                username=email.sender,
+                password=password,
+                use_starttls=email.use_starttls,
+                timeout_seconds=email.timeout_seconds,
+            )
+        try:
+            sender.send(message)
+        except Exception as exc:
+            return StageResult(
+                "notification",
+                False,
+                errors=(f"verified report email failed: {exc}",),
+            )
+        return StageResult(
+            "notification",
+            True,
+            warnings=(f"verified report emailed to {', '.join(recipients)}",),
+        )
 
 
 class LocalCleanupService:

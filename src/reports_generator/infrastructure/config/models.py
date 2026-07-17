@@ -124,8 +124,10 @@ class EmailConfig:
     sender: str
     password_env: str
     recipients: tuple[str, ...]
+    enabled: bool = True
     test_recipients: tuple[str, ...] = ()
     diagnosis_recipients: tuple[str, ...] = ()
+    verified_recipients: tuple[str, ...] = ()
     send_csv_attachment: bool = True
     use_starttls: bool = True
     timeout_seconds: float = 30.0

@@ -67,6 +67,7 @@ def validate_config(config: AppConfig) -> None:
         *email.recipients,
         *email.test_recipients,
         *email.diagnosis_recipients,
+        *email.verified_recipients,
     ):
         if address and ("@" not in address or any(char.isspace() for char in address)):
             errors.append(f"invalid email address: {address!r}")
