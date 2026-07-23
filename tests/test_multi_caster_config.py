@@ -1,4 +1,5 @@
 import sqlite3
+import threading
 from datetime import datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -294,8 +295,8 @@ class MultiCasterConfigTest(TestCase):
 
 
 class WorkflowOrderingTest(TestCase):
-    def _workflow(self, tmp, *, test_mode=False):
-        wf = ShiftWorkflow(cfg=_base_cfg(), test_mode=test_mode)
+    def _workflow(self, tmp, *, test_mode=False, selected_ids=None, cfg=None):
+        wf = ShiftWorkflow(cfg=cfg or _base_cfg(), selected_ids=selected_ids, test_mode=test_mode)
         wf.state_dir = Path(tmp)
         return wf
 
@@ -415,24 +416,31 @@ class WorkflowOrderingTest(TestCase):
             wf = self._workflow(tmp)
             wf.run(ShiftRun("02-07-2026", "Shift_A"))
 
-        self.assertEqual(
-            events,
-            [
-                "raw_email",
-                "verified_email",
-                "caster1_diagnosis_export",
-                "caster2_diagnosis_export",
-                "caster1_missing_video_generate",
-                "caster1_missing_overlay_upload",
-                "caster1_missing_normal_upload",
-                "caster2_missing_video_generate",
-                "caster2_missing_overlay_upload",
-                "caster2_missing_normal_upload",
-                "diagnosis_email",
-                "caster1_video",
-                "caster2_video",
-            ],
-        )
+        expected_events = [
+            "raw_email",
+            "verified_email",
+            "caster1_diagnosis_export",
+            "caster2_diagnosis_export",
+            "caster1_missing_video_generate",
+            "caster1_missing_overlay_upload",
+            "caster1_missing_normal_upload",
+            "caster2_missing_video_generate",
+            "caster2_missing_overlay_upload",
+            "caster2_missing_normal_upload",
+            "caster1_video",
+            "caster2_video",
+            "diagnosis_email",
+        ]
+        self.assertCountEqual(events, expected_events)
+        self.assertEqual(events[:4], expected_events[:4])
+        self.assertLess(events.index("caster1_missing_video_generate"), events.index("caster1_video"))
+        self.assertLess(events.index("caster2_missing_video_generate"), events.index("caster2_video"))
+        self.assertLess(events.index("caster1_missing_overlay_upload"), events.index("diagnosis_email"))
+        self.assertLess(events.index("caster1_missing_normal_upload"), events.index("diagnosis_email"))
+        self.assertLess(events.index("caster2_missing_overlay_upload"), events.index("diagnosis_email"))
+        self.assertLess(events.index("caster2_missing_normal_upload"), events.index("diagnosis_email"))
+        self.assertLess(events.index("caster1_video"), events.index("diagnosis_email"))
+        self.assertLess(events.index("caster2_video"), events.index("diagnosis_email"))
         diagnosis_body = diagnosis_bodies["all"]
         self.assertIn("### Caster 1: 10 Pipes", diagnosis_body)
         self.assertIn("### Caster 2: 10 Pipes", diagnosis_body)
@@ -440,6 +448,77 @@ class WorkflowOrderingTest(TestCase):
         self.assertIn("Overlay Video Link                  : https://drive/caster1/", diagnosis_body)
         self.assertIn("Normal Video Link                   : https://drive/caster1/", diagnosis_body)
         self.assertEqual(len(diagnosis_bodies["attachments"]), 2)
+
+    def test_missing_video_upload_runs_while_normal_shift_video_generates(self):
+        events = []
+        upload_started = threading.Event()
+        release_upload = threading.Event()
+        tmp_root = None
+        cfg = _base_cfg()
+        cfg["workflow"] = {"max_runtime_seconds": 60, "video_upload_workers": 1}
+        cfg["missing_loadcell_video"]["delete_after_upload"] = False
+
+        class FakeUploader:
+            def __init__(self, cfg=None, caster=None):
+                self.caster = caster
+
+            def upload_video(self, path, **_kwargs):
+                kind = "overlay" if "overlay" in Path(path).name else "normal"
+                events.append(f"{kind}_upload_started")
+                upload_started.set()
+                if not release_upload.wait(2):
+                    raise RuntimeError("upload was not released by normal video generation")
+                events.append(f"{kind}_upload_finished")
+                return f"https://drive/{self.caster.id}/{Path(path).name}"
+
+        class FakeOverlayGenerator:
+            def __init__(self, date_str, shift, windows=None, output_name=None, normal_output_name=None, cfg=None, caster=None):
+                self.normal_output_path = tmp_root / (normal_output_name or "missing_normal.mp4")
+
+            def generate(self):
+                events.append("missing_video_generate")
+                return str(tmp_root / "missing_overlay.mp4")
+
+        class FakeVideoGenerator:
+            def __init__(self, date_str, shift, cfg=None, caster=None):
+                self.image_root = tmp_root / "history"
+
+            def generate(self):
+                if not upload_started.wait(2):
+                    raise RuntimeError("upload did not start before normal shift video generation")
+                events.append("normal_shift_video_generate")
+                release_upload.set()
+                return str(tmp_root / "full_shift.mp4")
+
+        with (
+            TemporaryDirectory() as tmp,
+            patch.object(report_workflow, "GDriveUploader", FakeUploader),
+            patch.object(report_workflow, "ShiftVideoOverlayGenerator", FakeOverlayGenerator),
+            patch.object(report_workflow, "ShiftVideoGenerator", FakeVideoGenerator),
+            patch.object(report_workflow, "cleanup_shift_sources", lambda *args, **kwargs: {"deleted_dirs": [], "failed_dirs": {}}),
+        ):
+            tmp_root = Path(tmp)
+            wf = self._workflow(tmp, selected_ids=["caster1"], cfg=cfg)
+            run = ShiftRun("02-07-2026", "Shift_A")
+            caster = wf.casters[0]
+            result = report_workflow.CasterRunResult(caster=caster)
+            result.state = {"date": run.date_str, "shift": run.shift_name, "caster_id": caster.id, "caster_number": caster.number}
+            result.verified_summary = {
+                "loadcell_missing_records": [
+                    {"pipe_uid": "caster1-p1", "origin_time": "2026-07-02 06:10:00"}
+                ]
+            }
+            wf.results[caster.id] = result
+
+            wf.phase_missing_loadcell_videos(wf.casters, run)
+            wf.phase_normal_shift_videos(wf.casters, run)
+            wf.wait_for_video_uploads(run)
+
+        self.assertLess(events.index("overlay_upload_started"), events.index("normal_shift_video_generate"))
+        self.assertLess(events.index("normal_shift_video_generate"), events.index("overlay_upload_finished"))
+        self.assertIn("normal_upload_finished", events)
+        self.assertFalse(result.errors)
+        self.assertTrue(result.state["missing_loadcell_overlay_video_drive_link"].startswith("https://drive/caster1/"))
 
     def test_test_mode_routes_full_workflow_mail_to_test_recipients(self):
         deliveries = []

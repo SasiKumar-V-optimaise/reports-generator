@@ -1,4 +1,5 @@
 import argparse
+import inspect
 import json
 import logging
 import math
@@ -6,6 +7,8 @@ import os
 import sys
 import time
 import traceback
+import threading
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -26,6 +29,9 @@ from reports.video.video_overlay import ShiftVideoOverlayGenerator
 
 
 logger = logging.getLogger("reports-generator")
+
+DEFAULT_WORKFLOW_MAX_SECONDS = 7 * 60 * 60
+DEFAULT_VIDEO_UPLOAD_WORKERS = 2
 
 
 @dataclass(frozen=True)
@@ -53,6 +59,23 @@ class CasterRunResult:
     missing_overlay_link: str | None = None
     missing_normal_link: str | None = None
     full_shift_video_path: str | None = None
+
+
+@dataclass(frozen=True)
+class VideoUploadOutcome:
+    kind: str
+    path: str
+    link: str
+    deleted_after_upload: bool | None = None
+    delete_error: str | None = None
+
+
+@dataclass(frozen=True)
+class PendingVideoUpload:
+    result: CasterRunResult
+    kind: str
+    path: str
+    future: Future
 
 
 def setup_logging(cfg: dict):
@@ -83,9 +106,11 @@ def detect_shift_for_trigger(now: datetime) -> ShiftRun | None:
     return None
 
 
-def backoff_retry(fn, *, tries=4, base_delay=2.0, what="operation"):
+def backoff_retry(fn, *, tries=4, base_delay=2.0, what="operation", deadline_monotonic=None):
     last_err = None
     for attempt in range(1, tries + 1):
+        if deadline_monotonic is not None and time.monotonic() >= deadline_monotonic:
+            raise TimeoutError(f"{what} exceeded workflow deadline before attempt {attempt}")
         try:
             return fn()
         except Exception as exc:
@@ -93,6 +118,13 @@ def backoff_retry(fn, *, tries=4, base_delay=2.0, what="operation"):
             if attempt == tries:
                 break
             sleep_s = base_delay * (2 ** (attempt - 1))
+            if deadline_monotonic is not None:
+                remaining = deadline_monotonic - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError(
+                        f"{what} exceeded workflow deadline after {attempt} attempt(s): {last_err}"
+                    ) from last_err
+                sleep_s = min(sleep_s, remaining)
             logger.warning(
                 "%s failed (attempt %s/%s). Retrying in %.1fs. Error=%s",
                 what,
@@ -116,6 +148,11 @@ class ShiftWorkflow:
         self.state_dir.mkdir(parents=True, exist_ok=True)
         self._mailers: dict[str, EmailSender] = {}
         self.results: dict[str, CasterRunResult] = {}
+        self._state_lock = threading.RLock()
+        self._video_upload_executor: ThreadPoolExecutor | None = None
+        self._pending_video_uploads: list[PendingVideoUpload] = []
+        self._workflow_started_monotonic: float | None = None
+        self._workflow_deadline_monotonic: float | None = None
 
     def _run_key(self, run: ShiftRun) -> str:
         return f"{run.date_str.replace('-', '')}_{run.shift_name.lower()}"
@@ -136,10 +173,101 @@ class ShiftWorkflow:
         return {}
 
     def _save_state(self, run: ShiftRun, caster: CasterConfig, state: dict):
-        self._state_path(run, caster).write_text(json.dumps(state, indent=2, sort_keys=True))
+        with self._state_lock:
+            self._state_path(run, caster).write_text(json.dumps(state, indent=2, sort_keys=True))
 
     def _save_multi_state(self, run: ShiftRun, data: dict):
-        self._multi_state_path(run).write_text(json.dumps(data, indent=2, sort_keys=True))
+        with self._state_lock:
+            self._multi_state_path(run).write_text(json.dumps(data, indent=2, sort_keys=True))
+
+    def _workflow_cfg(self) -> dict:
+        return self.cfg.get("workflow", {}) or {}
+
+    def _workflow_max_seconds(self) -> int:
+        value = os.getenv("REPORT_WORKFLOW_MAX_SECONDS")
+        if value is None:
+            value = self._workflow_cfg().get("max_runtime_seconds", DEFAULT_WORKFLOW_MAX_SECONDS)
+        return self._parse_positive_int(value, default=DEFAULT_WORKFLOW_MAX_SECONDS, name="workflow.max_runtime_seconds")
+
+    def _video_upload_workers(self) -> int:
+        value = os.getenv("REPORT_VIDEO_UPLOAD_WORKERS")
+        if value is None:
+            value = self._workflow_cfg().get("video_upload_workers", DEFAULT_VIDEO_UPLOAD_WORKERS)
+        return self._parse_positive_int(value, default=DEFAULT_VIDEO_UPLOAD_WORKERS, name="workflow.video_upload_workers")
+
+    def _start_workflow_timer(self):
+        if self._workflow_started_monotonic is not None:
+            return
+        max_seconds = self._workflow_max_seconds()
+        self._workflow_started_monotonic = time.monotonic()
+        self._workflow_deadline_monotonic = self._workflow_started_monotonic + max_seconds
+        logger.info("Workflow runtime limit active | max_runtime_seconds=%s", max_seconds)
+
+    def _remaining_workflow_seconds(self) -> float:
+        self._start_workflow_timer()
+        if self._workflow_deadline_monotonic is None:
+            return math.inf
+        return max(0.0, self._workflow_deadline_monotonic - time.monotonic())
+
+    def _video_upload_executor_for_run(self) -> ThreadPoolExecutor:
+        self._start_workflow_timer()
+        if self._video_upload_executor is None:
+            workers = self._video_upload_workers()
+            self._video_upload_executor = ThreadPoolExecutor(
+                max_workers=workers,
+                thread_name_prefix="missing-video-upload",
+            )
+            logger.info(
+                "Async video upload worker pool started | workers=%s | remaining_seconds=%.0f",
+                workers,
+                self._remaining_workflow_seconds(),
+            )
+        return self._video_upload_executor
+
+    def _call_upload_video(self, uploader, path: str) -> str:
+        method = uploader.upload_video
+        try:
+            parameters = inspect.signature(method).parameters
+        except (TypeError, ValueError):
+            parameters = {}
+        accepts_kwargs = any(param.kind == inspect.Parameter.VAR_KEYWORD for param in parameters.values())
+        if accepts_kwargs or "deadline_monotonic" in parameters:
+            return method(path, deadline_monotonic=self._workflow_deadline_monotonic)
+        if "timeout_seconds" in parameters:
+            return method(path, timeout_seconds=self._remaining_workflow_seconds())
+        return method(path)
+
+    def _run_video_upload_task(
+        self,
+        caster: CasterConfig,
+        cfg: dict,
+        kind: str,
+        path: str,
+        delete_after_upload: bool,
+    ) -> VideoUploadOutcome:
+        uploader = GDriveUploader(cfg=cfg, caster=caster)
+        link = backoff_retry(
+            lambda: self._call_upload_video(uploader, path),
+            what=f"{caster.id} missing-loadcell {kind} video upload",
+            deadline_monotonic=self._workflow_deadline_monotonic,
+        )
+        deleted = None
+        delete_error = None
+        if delete_after_upload:
+            try:
+                Path(path).unlink(missing_ok=True)
+                deleted = True
+            except Exception as exc:
+                deleted = False
+                delete_error = str(exc)
+                logger.warning("Failed to delete %s missing-loadcell video | %s | error=%s", kind, path, exc)
+        return VideoUploadOutcome(
+            kind=kind,
+            path=path,
+            link=link,
+            deleted_after_upload=deleted,
+            delete_error=delete_error,
+        )
 
     @staticmethod
     def _clear_previous_run_outputs(state: dict):
@@ -374,10 +502,163 @@ class ShiftWorkflow:
             result.state[f"missing_loadcell_{kind}_video_skip_reason"] = reason
         self._save_state(run, result.caster, result.state)
 
+    def _submit_missing_loadcell_video_upload(
+        self,
+        run: ShiftRun,
+        result: CasterRunResult,
+        kind: str,
+        path: str,
+        delete_after_upload: bool,
+    ):
+        if self._remaining_workflow_seconds() <= 0:
+            self._mark_video_upload_timeout(run, result, kind, path)
+            return
+
+        result.state[f"missing_loadcell_{kind}_video_upload_pending"] = True
+        result.state[f"missing_loadcell_{kind}_video_uploaded"] = False
+        result.state[f"missing_loadcell_{kind}_video_upload_queued_at"] = datetime.now().isoformat(timespec="seconds")
+        result.state.pop(f"missing_loadcell_{kind}_video_upload_error", None)
+        result.state.pop(f"missing_loadcell_{kind}_video_upload_timed_out", None)
+        self._save_state(run, result.caster, result.state)
+
+        future = self._video_upload_executor_for_run().submit(
+            self._run_video_upload_task,
+            result.caster,
+            result.caster.cfg,
+            kind,
+            path,
+            delete_after_upload,
+        )
+        self._pending_video_uploads.append(PendingVideoUpload(result=result, kind=kind, path=path, future=future))
+        logger.info(
+            "Queued async missing-loadcell video upload | caster=%s | kind=%s | path=%s | pending=%s",
+            result.caster.id,
+            kind,
+            path,
+            len(self._pending_video_uploads),
+        )
+
+    def _apply_video_upload_success(self, run: ShiftRun, item: PendingVideoUpload, outcome: VideoUploadOutcome):
+        result = item.result
+        kind = outcome.kind
+        if kind == "overlay":
+            result.missing_overlay_link = outcome.link
+        elif kind == "normal":
+            result.missing_normal_link = outcome.link
+
+        result.state[f"missing_loadcell_{kind}_video_drive_link"] = outcome.link
+        result.state[f"missing_loadcell_{kind}_video_uploaded"] = True
+        result.state[f"missing_loadcell_{kind}_video_upload_pending"] = False
+        result.state[f"missing_loadcell_{kind}_video_uploaded_at"] = datetime.now().isoformat(timespec="seconds")
+        result.state.pop(f"missing_loadcell_{kind}_video_upload_error", None)
+        result.state.pop(f"missing_loadcell_{kind}_video_upload_timed_out", None)
+
+        if outcome.deleted_after_upload is not None:
+            result.state[f"missing_loadcell_{kind}_video_deleted_after_upload"] = outcome.deleted_after_upload
+        if outcome.delete_error:
+            result.state[f"missing_loadcell_{kind}_video_delete_error"] = outcome.delete_error
+
+        generated_kinds = [
+            upload_kind
+            for upload_kind in ("overlay", "normal")
+            if result.state.get(f"missing_loadcell_{upload_kind}_video_path")
+        ]
+        if generated_kinds and all(result.state.get(f"missing_loadcell_{upload_kind}_video_drive_link") for upload_kind in generated_kinds):
+            result.state["missing_loadcell_video_uploaded_at"] = datetime.now().isoformat(timespec="seconds")
+
+        self._save_state(run, result.caster, result.state)
+        logger.info(
+            "Missing-loadcell video upload completed | caster=%s | kind=%s | link=%s",
+            result.caster.id,
+            kind,
+            outcome.link,
+        )
+
+    def _apply_video_upload_failure(self, run: ShiftRun, item: PendingVideoUpload, exc_text: str):
+        result = item.result
+        kind = item.kind
+        result.state[f"missing_loadcell_{kind}_video_uploaded"] = False
+        result.state[f"missing_loadcell_{kind}_video_upload_pending"] = False
+        result.state[f"missing_loadcell_{kind}_video_upload_error"] = exc_text
+        result.state[f"missing_loadcell_{kind}_video_upload_failed_at"] = datetime.now().isoformat(timespec="seconds")
+        self._record_error(run, result, f"Missing-loadcell {kind} video upload failed", exc_text)
+        logger.error("Missing-loadcell video upload failed | caster=%s | kind=%s", result.caster.id, kind)
+
+    def _mark_video_upload_timeout(self, run: ShiftRun, result: CasterRunResult, kind: str, path: str):
+        reason = f"Video upload exceeded workflow limit of {self._workflow_max_seconds()} seconds"
+        result.state[f"missing_loadcell_{kind}_video_uploaded"] = False
+        result.state[f"missing_loadcell_{kind}_video_upload_pending"] = False
+        result.state[f"missing_loadcell_{kind}_video_upload_timed_out"] = True
+        result.state[f"missing_loadcell_{kind}_video_upload_timeout_reason"] = reason
+        result.state[f"missing_loadcell_{kind}_video_upload_failed_at"] = datetime.now().isoformat(timespec="seconds")
+        result.state[f"missing_loadcell_{kind}_video_path"] = path
+        self._record_error(run, result, f"Missing-loadcell {kind} video upload timed out", reason)
+        logger.error("Missing-loadcell video upload timed out | caster=%s | kind=%s | path=%s", result.caster.id, kind, path)
+
+    def wait_for_video_uploads(self, run: ShiftRun):
+        if not self._pending_video_uploads:
+            self._shutdown_video_upload_executor()
+            return
+
+        pending = list(self._pending_video_uploads)
+        self._pending_video_uploads = []
+        logger.info(
+            "Waiting for async missing-loadcell video uploads | pending=%s | remaining_seconds=%.0f",
+            len(pending),
+            self._remaining_workflow_seconds(),
+        )
+
+        while pending:
+            remaining = self._remaining_workflow_seconds()
+            if remaining <= 0:
+                for item in pending:
+                    item.future.cancel()
+                    self._mark_video_upload_timeout(run, item.result, item.kind, item.path)
+                pending = []
+                break
+
+            done_futures, _not_done = wait(
+                [item.future for item in pending],
+                timeout=remaining,
+                return_when=FIRST_COMPLETED,
+            )
+            if not done_futures:
+                for item in pending:
+                    item.future.cancel()
+                    self._mark_video_upload_timeout(run, item.result, item.kind, item.path)
+                pending = []
+                break
+
+            next_pending = []
+            for item in pending:
+                if item.future not in done_futures:
+                    next_pending.append(item)
+                    continue
+                try:
+                    outcome = item.future.result()
+                except Exception:
+                    self._apply_video_upload_failure(run, item, traceback.format_exc())
+                else:
+                    self._apply_video_upload_success(run, item, outcome)
+            pending = next_pending
+
+        self._shutdown_video_upload_executor()
+
+    def _shutdown_video_upload_executor(self):
+        if self._video_upload_executor is None:
+            return
+        self._video_upload_executor.shutdown(wait=True, cancel_futures=True)
+        self._video_upload_executor = None
+
     def _generate_missing_loadcell_videos(self, run: ShiftRun, result: CasterRunResult):
         cfg = result.caster.cfg
         video_cfg = self._missing_loadcell_video_cfg(cfg)
         records = (result.verified_summary or {}).get("loadcell_missing_records", []) or []
+        result.missing_overlay_link = None
+        result.missing_normal_link = None
+        for key in list(result.state):
+            if key.startswith("missing_loadcell_"):
+                result.state.pop(key, None)
         result.state["missing_loadcell_video_strategy"] = "merged_window_compilation_overlay_and_normal"
         result.state["missing_loadcell_video_record_count"] = len(records)
 
@@ -419,25 +700,16 @@ class ShiftWorkflow:
         result.state["missing_loadcell_normal_video_path"] = normal_path
         self._save_state(run, result.caster, result.state)
 
-        uploader = GDriveUploader(cfg=cfg, caster=result.caster)
-        overlay_link = backoff_retry(lambda: uploader.upload_video(overlay_path), what=f"{result.caster.id} overlay upload")
-        normal_link = backoff_retry(lambda: uploader.upload_video(normal_path), what=f"{result.caster.id} normal upload")
-        result.missing_overlay_link = overlay_link
-        result.missing_normal_link = normal_link
-        result.state["missing_loadcell_overlay_video_drive_link"] = overlay_link
-        result.state["missing_loadcell_normal_video_drive_link"] = normal_link
-        result.state["missing_loadcell_video_uploaded_at"] = datetime.now().isoformat(timespec="seconds")
+        result.state["missing_loadcell_video_uploads_queued_at"] = datetime.now().isoformat(timespec="seconds")
         self._save_state(run, result.caster, result.state)
-
-        if video_cfg["delete_after_upload"]:
-            for kind, path in (("overlay", overlay_path), ("normal", normal_path)):
-                try:
-                    Path(path).unlink(missing_ok=True)
-                    result.state[f"missing_loadcell_{kind}_video_deleted_after_upload"] = True
-                except Exception as exc:
-                    result.state[f"missing_loadcell_{kind}_video_deleted_after_upload"] = False
-                    logger.warning("Failed to delete %s missing-loadcell video | %s | error=%s", kind, path, exc)
-            self._save_state(run, result.caster, result.state)
+        for kind, path in (("overlay", overlay_path), ("normal", normal_path)):
+            self._submit_missing_loadcell_video_upload(
+                run,
+                result,
+                kind,
+                path,
+                delete_after_upload=video_cfg["delete_after_upload"],
+            )
 
     @staticmethod
     def _shift_display_name(shift: str) -> str:
@@ -760,16 +1032,27 @@ class ShiftWorkflow:
         return self._send_consolidated_email("verified", run, items, subject, "\n".join(body_lines))
 
     def _missing_loadcell_video_text(self, result: CasterRunResult, kind: str) -> str:
+        prefix = f"missing_loadcell_{kind}_video"
+        link = result.state.get(f"{prefix}_drive_link")
         if kind == "overlay":
-            link = result.missing_overlay_link or result.state.get("missing_loadcell_overlay_video_drive_link")
-            skip_reason = result.state.get("missing_loadcell_overlay_video_skip_reason")
+            link = result.missing_overlay_link or link
         else:
-            link = result.missing_normal_link or result.state.get("missing_loadcell_normal_video_drive_link")
-            skip_reason = result.state.get("missing_loadcell_normal_video_skip_reason")
+            link = result.missing_normal_link or link
         if link:
             return str(link)
+
+        skip_reason = result.state.get(f"{prefix}_skip_reason")
         if skip_reason:
             return f"N/A - {skip_reason}"
+        if result.state.get(f"{prefix}_upload_timed_out"):
+            timeout_reason = result.state.get(f"{prefix}_upload_timeout_reason", "Upload timed out")
+            return f"N/A - {timeout_reason}"
+        if result.state.get(f"{prefix}_upload_error"):
+            return "N/A - Upload failed"
+        if result.state.get(f"{prefix}_upload_pending"):
+            return "N/A - Upload pending"
+        if result.state.get(f"{prefix}_path"):
+            return "N/A - Generated, upload not completed"
         return "N/A"
 
     def _diagnosis_section_lines(self, result: CasterRunResult) -> list[str]:
@@ -1119,6 +1402,7 @@ class ShiftWorkflow:
     def phase_videos(self, casters: list[CasterConfig], run: ShiftRun):
         self.phase_missing_loadcell_videos(casters, run)
         self.phase_normal_shift_videos(casters, run)
+        self.wait_for_video_uploads(run)
 
     def _result_summary_lines(self, result: CasterRunResult) -> list[str]:
         verified_summary = result.verified_summary or result.state.get("verified_pipes_summary") or {}
@@ -1130,9 +1414,6 @@ class ShiftWorkflow:
             "sent" if result.state.get("emailed_diagnosis_xlsx") else
             result.state.get("diagnosis_skip_reason") or ("failed" if result.state.get("diagnosis_error") else "N/A")
         )
-        overlay_skip_reason = result.state.get("missing_loadcell_overlay_video_skip_reason")
-        overlay_link = result.missing_overlay_link or result.state.get("missing_loadcell_overlay_video_drive_link")
-        normal_link = result.missing_normal_link or result.state.get("missing_loadcell_normal_video_drive_link")
         video_status = result.full_shift_video_path or result.state.get("normal_shift_video_path")
         if not video_status:
             video_status = result.state.get("normal_shift_video_skip_reason") or ("failed" if result.state.get("normal_shift_video_error") else "N/A")
@@ -1145,8 +1426,8 @@ class ShiftWorkflow:
             f"  Diagnosis Status            : {diagnosis_status}",
             f"  Diagnosis Pipe Count        : {diagnosis_summary.get('pipe_count', 'N/A')}",
             f"  Raw CSV Drive Link          : {result.csv_drive_link or result.state.get('csv_drive_link') or 'N/A'}",
-            f"  Missing Overlay Link        : {overlay_link or (f'N/A ({overlay_skip_reason})' if overlay_skip_reason else 'N/A')}",
-            f"  Missing Normal Link         : {normal_link or 'N/A'}",
+            f"  Missing Overlay Link        : {self._missing_loadcell_video_text(result, 'overlay')}",
+            f"  Missing Normal Link         : {self._missing_loadcell_video_text(result, 'normal')}",
             f"  Full Shift Video            : {video_status}",
         ]
 
@@ -1256,14 +1537,16 @@ class ShiftWorkflow:
         logger.info("Diagnosis-only workflow finished")
 
     def run(self, run: ShiftRun):
+        self._start_workflow_timer()
         casters = self.load_selected_enabled_casters()
         logger.info("Workflow start | date=%s | shift=%s | casters=%s | test=%s", run.date_str, run.shift_name, [c.id for c in casters], self.test_mode)
         self.phase_raw_and_verified(casters, run)
         self.phase_csv_uploads(casters, run)
         self.phase_diagnosis(casters, run, send_email=False)
         self.phase_missing_loadcell_videos(casters, run)
-        self.phase_diagnosis_emails(casters, run)
         self.phase_normal_shift_videos(casters, run)
+        self.wait_for_video_uploads(run)
+        self.phase_diagnosis_emails(casters, run)
         self.finish_caster_states(casters, run)
         logger.info("Workflow finished | date=%s | shift=%s", run.date_str, run.shift_name)
 

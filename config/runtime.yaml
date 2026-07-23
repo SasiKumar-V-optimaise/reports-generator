@@ -56,6 +56,11 @@ jetson_storage_alert:
 video_retention:
   keep_days: 5
   include_overlay_videos: true
+
+workflow:
+  # Keep each systemd-triggered shift job under the 8-hour timer interval.
+  max_runtime_seconds: 25200
+  video_upload_workers: 2
 verified_pipe_records_recipients:
   - punithsai2001@gmail.com
   - saikiran@electrosteel.com
